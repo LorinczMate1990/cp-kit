@@ -92,7 +92,7 @@ These complaints have come in from various teams. Use them as starting points - 
 
 ## Submission
 
-Fork this repo and submit your work as a pull request.
+Fork this repo and submit your work as a pull request against your own fork, so it's easy to review.
 
 **Requirements:**
 

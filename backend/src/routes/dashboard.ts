@@ -3,7 +3,6 @@ import { requireOwnerOrAdmin } from '../middleware/auth';
 import { TenantRequest } from '../middleware/tenant';
 import { isNotFoundError } from '../utils/prismaErrors';
 import { validate, createDashboardSchema, createWidgetSchema } from '../middleware/validate';
-import { cache, cacheKeys } from '../utils/cache';
 import { broadcastToOrg } from '../index';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -142,9 +141,6 @@ router.put('/:dashboardId', async (req: TenantRequest, res: Response) => {
       }
     });
 
-    // Invalidate cache
-    cache.delete(cacheKeys.dashboard(dashboardId));
-
     res.json(dashboard);
   } catch (error) {
     console.error('Update dashboard error:', error);
@@ -170,10 +166,6 @@ router.delete('/:dashboardId', async (req: TenantRequest, res: Response) => {
     await req.db.dashboard.delete({
       where: { id: dashboardId }
     });
-
-    // Clear cache
-    cache.delete(cacheKeys.dashboard(dashboardId));
-    cache.delete(cacheKeys.dashboardWidgets(dashboardId));
 
     // Audit log
     await req.db.auditLog.create({
@@ -225,9 +217,6 @@ router.post('/:dashboardId/widgets', validate(createWidgetSchema), async (req: T
       }
     });
 
-    // Invalidate cache
-    cache.delete(cacheKeys.dashboardWidgets(dashboardId));
-
     res.status(201).json(widget);
   } catch (error) {
     console.error('Create widget error:', error);
@@ -265,8 +254,6 @@ router.put('/:dashboardId/widgets/:widgetId', async (req: TenantRequest, res: Re
       data: updateData
     });
 
-    cache.delete(cacheKeys.dashboardWidgets(dashboardId));
-
     res.json(widget);
   } catch (error) {
     if (isNotFoundError(error)) {
@@ -296,8 +283,6 @@ router.delete('/:dashboardId/widgets/:widgetId', async (req: TenantRequest, res:
     await req.db.widget.delete({
       where: { id: widgetId, dashboardId }
     });
-
-    cache.delete(cacheKeys.dashboardWidgets(dashboardId));
 
     res.json({ message: 'Widget deleted' });
   } catch (error) {

@@ -4,6 +4,7 @@ import { TenantRequest } from '../middleware/tenant';
 import { isNotFoundError, isUniqueConstraintError } from '../utils/prismaErrors';
 import { hashPassword, generateApiKey } from '../utils/encryption';
 import { cache, cacheKeys } from '../utils/cache';
+import { CACHE_TTL } from '../constants/shared';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
@@ -17,7 +18,7 @@ router.get('/current', async (req: TenantRequest, res: Response) => {
 
     // Try cache first
     const cacheKey = cacheKeys.organization(req.user.organizationId);
-    let organization = cache.get(cacheKey);
+    let organization = await cache.get(cacheKey);
 
     if (!organization) {
       organization = await req.db.organization.findUnique({
@@ -34,7 +35,7 @@ router.get('/current', async (req: TenantRequest, res: Response) => {
       });
 
       if (organization) {
-        cache.set(cacheKey, organization, 300);
+        await cache.set(cacheKey, organization, CACHE_TTL.ORGANIZATION);
       }
     }
 
@@ -72,7 +73,7 @@ router.put('/current', requireOwnerOrAdmin, async (req: TenantRequest, res: Resp
     });
 
     // Invalidate cache
-    cache.delete(cacheKeys.organization(req.user!.organizationId));
+    await cache.delete(cacheKeys.organization(req.user!.organizationId));
 
     // Audit log
     await req.db.auditLog.create({
@@ -471,7 +472,7 @@ router.delete('/current', requireOwner, async (req: TenantRequest, res: Response
     });
 
     // Clear cache
-    cache.deletePattern(`org:${req.user!.organizationId}`);
+    await cache.deleteByPrefix(cacheKeys.organization(req.user!.organizationId));
 
     res.json({ message: 'Organization deleted' });
   } catch (error) {

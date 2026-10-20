@@ -2,7 +2,6 @@ import { Router, Response } from 'express';
 import { TenantRequest } from '../middleware/tenant';
 import { isNotFoundError } from '../utils/prismaErrors';
 import { hashPassword, verifyPassword } from '../utils/encryption';
-import { cache, cacheKeys } from '../utils/cache';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
@@ -60,9 +59,6 @@ router.put('/me', async (req: TenantRequest, res: Response) => {
       where: { id: req.user!.id },
       data: updateData
     });
-
-    // Clear cache
-    cache.delete(cacheKeys.user(req.user!.id));
 
     res.json({
       id: user.id,

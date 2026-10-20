@@ -17,6 +17,7 @@ import webhooksRoutes from './routes/webhooks';
 import { authMiddleware } from './middleware/auth';
 import { tenantMiddleware } from './middleware/tenant';
 import { rateLimiter } from './middleware/rateLimit';
+import { redis, connectRedis } from './utils/redis';
 import { startNotificationJob } from './jobs/notifications';
 import { startReportJob } from './jobs/reports';
 
@@ -52,7 +53,10 @@ app.use('/api/audit', authMiddleware, tenantMiddleware, auditRoutes);
 app.use('/api/webhooks', authMiddleware, tenantMiddleware, webhooksRoutes);
 
 // WebSocket handling
+// Connections can't be shared, so each instance keeps its own. Broadcasts go through Redis pub/sub,
+// so every instance delivers them to its own clients (see ai-instructions/adr/stateless-backend.md).
 const wsClients = new Map<string, Set<any>>();
+const BROADCAST_CHANNEL = 'ws:broadcast';
 
 wss.on('connection', (ws, req) => {
   const orgId = req.url?.split('?org=')[1];
@@ -64,7 +68,11 @@ wss.on('connection', (ws, req) => {
     wsClients.get(orgId)!.add(ws);
 
     ws.on('close', () => {
-      wsClients.get(orgId)?.delete(ws);
+      const clients = wsClients.get(orgId);
+      clients?.delete(ws);
+      if (clients?.size === 0) {
+        wsClients.delete(orgId);
+      }
     });
   }
 
@@ -81,16 +89,42 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// Broadcast helper for routes to use
-export function broadcastToOrg(orgId: string, message: object) {
-  if (wsClients.has(orgId)) {
-    wsClients.get(orgId)?.forEach(client => {
-      if (client.readyState === 1) {
-        client.send(JSON.stringify(message));
-      }
-    });
-  }
+// Delivers a message to the clients of an organization connected to this instance
+function deliverToOrg(orgId: string, message: object) {
+  wsClients.get(orgId)?.forEach(client => {
+    if (client.readyState === 1) {
+      client.send(JSON.stringify(message));
+    }
+  });
 }
+
+// Broadcast helper for routes to use: reaches the organization's clients on every instance.
+// If Redis is unavailable, it falls back to this instance's clients only.
+export function broadcastToOrg(orgId: string, message: object) {
+  redis.publish(BROADCAST_CHANNEL, JSON.stringify({ orgId, message })).catch((error) => {
+    console.error('Broadcast publish failed:', error.message);
+    deliverToOrg(orgId, message);
+  });
+}
+
+// A subscribed Redis connection can't run other commands, so the subscriber is a separate connection
+const subscriber = redis.duplicate();
+subscriber.on('error', (error) => console.error('Redis subscriber error:', error.message));
+
+connectRedis();
+subscriber
+  .connect()
+  .then(() =>
+    subscriber.subscribe(BROADCAST_CHANNEL, (payload) => {
+      try {
+        const { orgId, message } = JSON.parse(payload);
+        deliverToOrg(orgId, message);
+      } catch (error) {
+        console.error('Invalid broadcast payload:', (error as Error).message);
+      }
+    })
+  )
+  .catch((error) => console.error('Redis subscriber connection failed:', error.message));
 
 // Global error handler
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

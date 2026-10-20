@@ -3,6 +3,7 @@ import { apiKeyMiddleware } from '../middleware/auth';
 import { TenantRequest, tenantMiddleware } from '../middleware/tenant';
 import { getAnalyticsByFilter, searchEvents, bulkInsertEvents } from '../utils/db';
 import { cache, cacheKeys } from '../utils/cache';
+import { CACHE_TTL } from '../constants/shared';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
@@ -131,14 +132,17 @@ router.get('/search', async (req: TenantRequest, res: Response) => {
   }
 });
 
+const STATS_PERIODS = ['hour', 'day', 'week', 'month'];
+
 // Get aggregated stats
 router.get('/stats', async (req: TenantRequest, res: Response) => {
   try {
-    const { period } = req.query;
+    // Only known periods: the period is part of the cache key, so arbitrary values would create unbounded keys
+    const period = STATS_PERIODS.includes(req.query.period as string) ? (req.query.period as string) : 'day';
 
     // Check cache
-    const cacheKey = cacheKeys.orgAnalytics(req.user!.organizationId, period as string || 'day');
-    const cached = cache.get(cacheKey);
+    const cacheKey = cacheKeys.orgAnalytics(req.user!.organizationId, period);
+    const cached = await cache.get(cacheKey);
     if (cached) {
       return res.json(cached);
     }
@@ -191,11 +195,10 @@ router.get('/stats', async (req: TenantRequest, res: Response) => {
       totalEvents,
       eventsByType,
       recentEvents,
-      period: period || 'day'
+      period
     };
 
-    // Cache for 60 seconds
-    cache.set(cacheKey, stats, 60);
+    await cache.set(cacheKey, stats, CACHE_TTL.ANALYTICS);
 
     res.json(stats);
   } catch (error) {

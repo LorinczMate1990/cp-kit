@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
-import { prisma } from '../index';
-import { AuthRequest, requireOwnerOrAdmin, requireOwner } from '../middleware/auth';
+import { requireOwnerOrAdmin, requireOwner } from '../middleware/auth';
+import { TenantRequest } from '../middleware/tenant';
+import { isNotFoundError, isUniqueConstraintError } from '../utils/prismaErrors';
 import { hashPassword, generateApiKey } from '../utils/encryption';
 import { cache, cacheKeys } from '../utils/cache';
 import { v4 as uuidv4 } from 'uuid';
@@ -8,7 +9,7 @@ import { v4 as uuidv4 } from 'uuid';
 const router = Router();
 
 // Get current organization
-router.get('/current', async (req: AuthRequest, res: Response) => {
+router.get('/current', async (req: TenantRequest, res: Response) => {
   try {
     if (!req.user) {
       return res.status(401).json({ error: 'Not authenticated' });
@@ -19,7 +20,7 @@ router.get('/current', async (req: AuthRequest, res: Response) => {
     let organization = cache.get(cacheKey);
 
     if (!organization) {
-      organization = await prisma.organization.findUnique({
+      organization = await req.db.organization.findUnique({
         where: { id: req.user.organizationId },
         include: {
           _count: {
@@ -49,7 +50,7 @@ router.get('/current', async (req: AuthRequest, res: Response) => {
 });
 
 // Update organization
-router.put('/current', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.put('/current', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { name, slug, tier, monthlyBudget } = req.body;
 
@@ -65,7 +66,7 @@ router.put('/current', requireOwnerOrAdmin, async (req: AuthRequest, res: Respon
       updateData.monthlyBudget = parseFloat(monthlyBudget);
     }
 
-    const organization = await prisma.organization.update({
+    const organization = await req.db.organization.update({
       where: { id: req.user!.organizationId },
       data: updateData
     });
@@ -74,7 +75,7 @@ router.put('/current', requireOwnerOrAdmin, async (req: AuthRequest, res: Respon
     cache.delete(cacheKeys.organization(req.user!.organizationId));
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -94,9 +95,9 @@ router.put('/current', requireOwnerOrAdmin, async (req: AuthRequest, res: Respon
 });
 
 // Get organization members
-router.get('/members', async (req: AuthRequest, res: Response) => {
+router.get('/members', async (req: TenantRequest, res: Response) => {
   try {
-    const members = await prisma.user.findMany({
+    const members = await req.db.user.findMany({
       where: { organizationId: req.user!.organizationId },
       select: {
         id: true,
@@ -119,7 +120,7 @@ router.get('/members', async (req: AuthRequest, res: Response) => {
 });
 
 // Invite member
-router.post('/invite', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/invite', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { email, name, role } = req.body;
     if (!email || !name) {
@@ -127,7 +128,7 @@ router.post('/invite', requireOwnerOrAdmin, async (req: AuthRequest, res: Respon
     }
 
     // Check if user already exists
-    const existingUser = await prisma.user.findUnique({
+    const existingUser = await req.db.user.findUnique({
       where: { email: email.toLowerCase() }
     });
 
@@ -137,7 +138,7 @@ router.post('/invite', requireOwnerOrAdmin, async (req: AuthRequest, res: Respon
     const defaultPassword = 'ChangeMe123!';
     const passwordHash = hashPassword(defaultPassword);
 
-    const user = await prisma.user.create({
+    const user = await req.db.user.create({
       data: {
         id: uuidv4(),
         email: email.toLowerCase(),
@@ -149,7 +150,7 @@ router.post('/invite', requireOwnerOrAdmin, async (req: AuthRequest, res: Respon
     });
 
     // Create notification for the inviter
-    await prisma.notification.create({
+    await req.db.notification.create({
       data: {
         id: uuidv4(),
         userId: req.user!.id,
@@ -162,7 +163,7 @@ router.post('/invite', requireOwnerOrAdmin, async (req: AuthRequest, res: Respon
     console.log(`User ${email} created with password: ${defaultPassword}`);
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -182,17 +183,21 @@ router.post('/invite', requireOwnerOrAdmin, async (req: AuthRequest, res: Respon
       temporaryPassword: defaultPassword
     });
   } catch (error) {
+    // Emails are unique across tenants; the scoped lookup above only sees this organization
+    if (isUniqueConstraintError(error)) {
+      return res.status(400).json({ error: 'User with this email already exists' });
+    }
     console.error('Invite member error:', error);
     res.status(500).json({ error: 'Failed to invite member' });
   }
 });
 
 // Update member role
-router.put('/members/:memberId', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.put('/members/:memberId', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { memberId } = req.params;
     const { role, isActive } = req.body;
-    const member = await prisma.user.findUnique({
+    const member = await req.db.user.findUnique({
       where: { id: memberId }
     });
 
@@ -202,7 +207,7 @@ router.put('/members/:memberId', requireOwnerOrAdmin, async (req: AuthRequest, r
 
     // Prevent demoting the last owner
     if (role && role !== 'owner' && member.role === 'owner') {
-      const ownerCount = await prisma.user.count({
+      const ownerCount = await req.db.user.count({
         where: {
           organizationId: member.organizationId,
           role: 'owner',
@@ -224,7 +229,7 @@ router.put('/members/:memberId', requireOwnerOrAdmin, async (req: AuthRequest, r
     if (role) updateData.role = role;
     if (isActive !== undefined) updateData.isActive = isActive;
 
-    const updatedMember = await prisma.user.update({
+    const updatedMember = await req.db.user.update({
       where: { id: memberId },
       data: updateData,
       select: {
@@ -237,7 +242,7 @@ router.put('/members/:memberId', requireOwnerOrAdmin, async (req: AuthRequest, r
     });
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -257,18 +262,17 @@ router.put('/members/:memberId', requireOwnerOrAdmin, async (req: AuthRequest, r
 });
 
 // Remove member
-router.delete('/members/:memberId', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.delete('/members/:memberId', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { memberId } = req.params;
 
-    const member = await prisma.user.findUnique({
+    const member = await req.db.user.findUnique({
       where: { id: memberId }
     });
 
     if (!member) {
       return res.status(404).json({ error: 'Member not found' });
     }
-    // Can delete users from other organizations
 
     // Can't delete yourself
     if (memberId === req.user!.id) {
@@ -282,7 +286,7 @@ router.delete('/members/:memberId', requireOwnerOrAdmin, async (req: AuthRequest
 
     // Check if last owner
     if (member.role === 'owner') {
-      const ownerCount = await prisma.user.count({
+      const ownerCount = await req.db.user.count({
         where: {
           organizationId: member.organizationId,
           role: 'owner',
@@ -295,12 +299,12 @@ router.delete('/members/:memberId', requireOwnerOrAdmin, async (req: AuthRequest
       }
     }
     // All user's audit logs, dashboards, etc. now have orphaned references
-    await prisma.user.delete({
+    await req.db.user.delete({
       where: { id: memberId }
     });
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -320,9 +324,9 @@ router.delete('/members/:memberId', requireOwnerOrAdmin, async (req: AuthRequest
 });
 
 // API Keys management
-router.get('/api-keys', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.get('/api-keys', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
-    const apiKeys = await prisma.apiKey.findMany({
+    const apiKeys = await req.db.apiKey.findMany({
       where: { organizationId: req.user!.organizationId },
       select: {
         id: true,
@@ -348,7 +352,7 @@ router.get('/api-keys', requireOwnerOrAdmin, async (req: AuthRequest, res: Respo
 });
 
 // Create API key
-router.post('/api-keys', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/api-keys', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { name, permissions, expiresInDays } = req.body;
 
@@ -362,7 +366,7 @@ router.post('/api-keys', requireOwnerOrAdmin, async (req: AuthRequest, res: Resp
       ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
       : null;
 
-    const apiKey = await prisma.apiKey.create({
+    const apiKey = await req.db.apiKey.create({
       data: {
         id: uuidv4(),
         name,
@@ -377,7 +381,7 @@ router.post('/api-keys', requireOwnerOrAdmin, async (req: AuthRequest, res: Resp
     console.log(`Created API key: ${key} for org ${req.user!.organizationId}`);
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -403,25 +407,28 @@ router.post('/api-keys', requireOwnerOrAdmin, async (req: AuthRequest, res: Resp
 });
 
 // Revoke API key
-router.delete('/api-keys/:keyId', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.delete('/api-keys/:keyId', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { keyId } = req.params;
-    await prisma.apiKey.update({
+    await req.db.apiKey.update({
       where: { id: keyId },
       data: { isActive: false }
     });
 
     res.json({ message: 'API key revoked' });
   } catch (error) {
+    if (isNotFoundError(error)) {
+      return res.status(404).json({ error: 'API key not found' });
+    }
     console.error('Revoke API key error:', error);
     res.status(500).json({ error: 'Failed to revoke API key' });
   }
 });
 
 // Get organization settings
-router.get('/settings', async (req: AuthRequest, res: Response) => {
+router.get('/settings', async (req: TenantRequest, res: Response) => {
   try {
-    const organization = await prisma.organization.findUnique({
+    const organization = await req.db.organization.findUnique({
       where: { id: req.user!.organizationId },
       select: {
         id: true,
@@ -442,11 +449,11 @@ router.get('/settings', async (req: AuthRequest, res: Response) => {
 });
 
 // Delete organization
-router.delete('/current', requireOwner, async (req: AuthRequest, res: Response) => {
+router.delete('/current', requireOwner, async (req: TenantRequest, res: Response) => {
   try {
     const { confirmation } = req.body;
 
-    const organization = await prisma.organization.findUnique({
+    const organization = await req.db.organization.findUnique({
       where: { id: req.user!.organizationId }
     });
 
@@ -459,7 +466,7 @@ router.delete('/current', requireOwner, async (req: AuthRequest, res: Response) 
       return res.status(400).json({ error: 'Please confirm by typing the organization name' });
     }
     // including audit logs that might be needed for compliance
-    await prisma.organization.delete({
+    await req.db.organization.delete({
       where: { id: req.user!.organizationId }
     });
 
@@ -474,7 +481,7 @@ router.delete('/current', requireOwner, async (req: AuthRequest, res: Response) 
 });
 
 // Transfer ownership
-router.post('/transfer-ownership', requireOwner, async (req: AuthRequest, res: Response) => {
+router.post('/transfer-ownership', requireOwner, async (req: TenantRequest, res: Response) => {
   try {
     const { newOwnerId, password } = req.body;
 
@@ -483,14 +490,14 @@ router.post('/transfer-ownership', requireOwner, async (req: AuthRequest, res: R
     }
 
     // Verify current user's password
-    const currentUser = await prisma.user.findUnique({
+    const currentUser = await req.db.user.findUnique({
       where: { id: req.user!.id }
     });
 
     if (!currentUser) {
       return res.status(404).json({ error: 'User not found' });
     }
-    const newOwner = await prisma.user.findUnique({
+    const newOwner = await req.db.user.findUnique({
       where: { id: newOwnerId }
     });
 
@@ -499,19 +506,19 @@ router.post('/transfer-ownership', requireOwner, async (req: AuthRequest, res: R
     }
 
     // Transaction to transfer ownership
-    await prisma.$transaction([
-      prisma.user.update({
+    await req.db.$transaction([
+      req.db.user.update({
         where: { id: req.user!.id },
         data: { role: 'admin' }
       }),
-      prisma.user.update({
+      req.db.user.update({
         where: { id: newOwnerId },
         data: { role: 'owner' }
       })
     ]);
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,

@@ -10,8 +10,32 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Technical data partition, not part of the logical data model.
+// Every other model has a tenantId; see ai-instructions/adr/tenant-separation.md.
+// Code using the tenant client (req.db) never sets tenantId: tenantMiddleware injects it and hides it from the types.
+model Tenant {
+  id              String   @id @default(uuid())
+
+  organizations   Organization[]
+  users           User[]
+  sessions        Session[]
+  dashboards      Dashboard[]
+  widgets         Widget[]
+  analyticsEvents AnalyticsEvent[]
+  apiKeys         ApiKey[]
+  webhooks        Webhook[]
+  notifications   Notification[]
+  auditLogs       AuditLog[]
+  invoices        Invoice[]
+  comments        Comment[]
+  emailQueue      EmailQueue[]
+  usageRecords    UsageRecord[]
+}
+
 model Organization {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name            String
   slug            String   @unique
   tier            String   @default("free") // free, starter, pro, enterprise
@@ -32,10 +56,14 @@ model Organization {
   notifications   Notification[]
   auditLogs       AuditLog[]
   invoices        Invoice[]
+
+  @@index([tenantId])
 }
 
 model User {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   email           String   @unique
   passwordHash    String
   name            String
@@ -54,10 +82,14 @@ model User {
   apiKeys         ApiKey[]
   comments        Comment[]
   sessions        Session[]
+
+  @@index([tenantId])
 }
 
 model Session {
   id          String   @id @default(uuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userId      String
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   token       String   @unique
@@ -65,10 +97,14 @@ model Session {
   createdAt   DateTime @default(now())
   userAgent   String?
   ipAddress   String?
+
+  @@index([tenantId])
 }
 
 model Dashboard {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name            String
   description     String?
   organizationId  String
@@ -82,10 +118,14 @@ model Dashboard {
   updatedAt       DateTime @updatedAt
 
   widgets         Widget[]
+
+  @@index([tenantId])
 }
 
 model Widget {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name            String
   type            String   // chart, metric, table, text
   config          Json     @default("{}")
@@ -98,10 +138,14 @@ model Widget {
   refreshInterval Int      @default(300) // seconds
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@index([tenantId])
 }
 
 model AnalyticsEvent {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   organizationId  String
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   eventType       String
@@ -113,10 +157,13 @@ model AnalyticsEvent {
   source          String   @default("api")
 
   // @@index([organizationId, createdAt]) - MISSING!
+  @@index([tenantId])
 }
 
 model ApiKey {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name            String
   key             String   @unique
   keyHash         String
@@ -129,10 +176,14 @@ model ApiKey {
   expiresAt       DateTime?
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
+
+  @@index([tenantId])
 }
 
 model Webhook {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   name            String
   url             String
   secret          String
@@ -144,10 +195,14 @@ model Webhook {
   failureCount    Int      @default(0)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@index([tenantId])
 }
 
 model Notification {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   userId          String
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   organizationId  String
@@ -158,10 +213,14 @@ model Notification {
   link            String?
   isRead          Boolean  @default(false)
   createdAt       DateTime @default(now())
+
+  @@index([tenantId])
 }
 
 model AuditLog {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   organizationId  String
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   userId          String
@@ -174,10 +233,13 @@ model AuditLog {
   userAgent       String?
   createdAt       DateTime @default(now())
 
+  @@index([tenantId])
 }
 
 model Invoice {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   organizationId  String
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   stripeInvoiceId String?  @unique
@@ -189,10 +251,14 @@ model Invoice {
   paidAt          DateTime?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@index([tenantId])
 }
 
 model Comment {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   content         String
   userId          String
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -201,10 +267,14 @@ model Comment {
   parentId        String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+
+  @@index([tenantId])
 }
 
 model EmailQueue {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   to              String
   subject         String
   body            String
@@ -214,10 +284,14 @@ model EmailQueue {
   scheduledFor    DateTime @default(now())
   sentAt          DateTime?
   createdAt       DateTime @default(now())
+
+  @@index([tenantId])
 }
 
 model UsageRecord {
   id              String   @id @default(uuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   organizationId  String
   metric          String   // api_calls, events_ingested, storage_mb
   value           Float
@@ -226,4 +300,5 @@ model UsageRecord {
   createdAt       DateTime @default(now())
 
   @@unique([organizationId, metric, periodStart])
+  @@index([tenantId])
 }

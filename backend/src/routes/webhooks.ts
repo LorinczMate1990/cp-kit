@@ -1,6 +1,7 @@
-import { Router, Response, Request } from 'express';
-import { prisma } from '../index';
-import { AuthRequest, requireOwnerOrAdmin } from '../middleware/auth';
+import { Router, Response } from 'express';
+import { requireOwnerOrAdmin } from '../middleware/auth';
+import { TenantRequest, TenantPrismaClient } from '../middleware/tenant';
+import { isNotFoundError } from '../utils/prismaErrors';
 import { generateToken, verifyWebhookSignature } from '../utils/encryption';
 import { v4 as uuidv4 } from 'uuid';
 import https from 'https';
@@ -9,9 +10,9 @@ import http from 'http';
 const router = Router();
 
 // Get all webhooks
-router.get('/', async (req: AuthRequest, res: Response) => {
+router.get('/', async (req: TenantRequest, res: Response) => {
   try {
-    const webhooks = await prisma.webhook.findMany({
+    const webhooks = await req.db.webhook.findMany({
       where: { organizationId: req.user!.organizationId },
       orderBy: { createdAt: 'desc' }
     });
@@ -23,10 +24,10 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // Get single webhook
-router.get('/:webhookId', async (req: AuthRequest, res: Response) => {
+router.get('/:webhookId', async (req: TenantRequest, res: Response) => {
   try {
     const { webhookId } = req.params;
-    const webhook = await prisma.webhook.findUnique({
+    const webhook = await req.db.webhook.findUnique({
       where: { id: webhookId }
     });
 
@@ -42,7 +43,7 @@ router.get('/:webhookId', async (req: AuthRequest, res: Response) => {
 });
 
 // Create webhook
-router.post('/', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { name, url, events } = req.body;
     if (!name || !url) {
@@ -52,7 +53,7 @@ router.post('/', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) =>
 
     const secret = generateToken(32);
 
-    const webhook = await prisma.webhook.create({
+    const webhook = await req.db.webhook.create({
       data: {
         id: uuidv4(),
         name,
@@ -64,7 +65,7 @@ router.post('/', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) =>
     });
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -84,11 +85,11 @@ router.post('/', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) =>
 });
 
 // Update webhook
-router.put('/:webhookId', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.put('/:webhookId', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { webhookId } = req.params;
     const { name, url, events, isActive } = req.body;
-    const existing = await prisma.webhook.findUnique({
+    const existing = await req.db.webhook.findUnique({
       where: { id: webhookId }
     });
 
@@ -102,7 +103,7 @@ router.put('/:webhookId', requireOwnerOrAdmin, async (req: AuthRequest, res: Res
     if (events !== undefined) updateData.events = events;
     if (isActive !== undefined) updateData.isActive = isActive;
 
-    const webhook = await prisma.webhook.update({
+    const webhook = await req.db.webhook.update({
       where: { id: webhookId },
       data: updateData
     });
@@ -115,44 +116,50 @@ router.put('/:webhookId', requireOwnerOrAdmin, async (req: AuthRequest, res: Res
 });
 
 // Delete webhook
-router.delete('/:webhookId', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.delete('/:webhookId', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { webhookId } = req.params;
-    await prisma.webhook.delete({
+    await req.db.webhook.delete({
       where: { id: webhookId }
     });
 
     res.json({ message: 'Webhook deleted' });
   } catch (error) {
+    if (isNotFoundError(error)) {
+      return res.status(404).json({ error: 'Webhook not found' });
+    }
     console.error('Delete webhook error:', error);
     res.status(500).json({ error: 'Failed to delete webhook' });
   }
 });
 
 // Regenerate webhook secret
-router.post('/:webhookId/regenerate-secret', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/:webhookId/regenerate-secret', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { webhookId } = req.params;
 
     const newSecret = generateToken(32);
-    const webhook = await prisma.webhook.update({
+    const webhook = await req.db.webhook.update({
       where: { id: webhookId },
       data: { secret: newSecret }
     });
 
     res.json({ secret: newSecret });
   } catch (error) {
+    if (isNotFoundError(error)) {
+      return res.status(404).json({ error: 'Webhook not found' });
+    }
     console.error('Regenerate secret error:', error);
     res.status(500).json({ error: 'Failed to regenerate secret' });
   }
 });
 
 // Test webhook
-router.post('/:webhookId/test', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/:webhookId/test', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { webhookId } = req.params;
 
-    const webhook = await prisma.webhook.findFirst({
+    const webhook = await req.db.webhook.findFirst({
       where: {
         id: webhookId,
         organizationId: req.user!.organizationId
@@ -172,10 +179,10 @@ router.post('/:webhookId/test', requireOwnerOrAdmin, async (req: AuthRequest, re
       }
     };
 
-    const result = await deliverWebhook(webhook, payload);
+    const result = await deliverWebhook(req.db, webhook, payload);
 
     // Update last triggered
-    await prisma.webhook.update({
+    await req.db.webhook.update({
       where: { id: webhookId },
       data: { lastTriggeredAt: new Date() }
     });
@@ -188,7 +195,7 @@ router.post('/:webhookId/test', requireOwnerOrAdmin, async (req: AuthRequest, re
 });
 
 // Get webhook deliveries (would need a separate table in real app)
-router.get('/:webhookId/deliveries', async (req: AuthRequest, res: Response) => {
+router.get('/:webhookId/deliveries', async (req: TenantRequest, res: Response) => {
   try {
     res.json([]);
   } catch (error) {
@@ -198,7 +205,7 @@ router.get('/:webhookId/deliveries', async (req: AuthRequest, res: Response) => 
 });
 
 // Internal function to deliver webhooks
-async function deliverWebhook(webhook: any, payload: any): Promise<any> {
+async function deliverWebhook(db: TenantPrismaClient, webhook: any, payload: any): Promise<any> {
   return new Promise((resolve, reject) => {
     const payloadString = JSON.stringify(payload);
 
@@ -237,7 +244,7 @@ async function deliverWebhook(webhook: any, payload: any): Promise<any> {
     });
 
     req.on('error', (error) => {
-      prisma.webhook.update({
+      db.webhook.update({
         where: { id: webhook.id },
         data: { failureCount: { increment: 1 } }
       }).catch(console.error);
@@ -254,11 +261,10 @@ async function deliverWebhook(webhook: any, payload: any): Promise<any> {
 }
 
 // Trigger webhook for event (called by other parts of the system)
-export async function triggerWebhooks(orgId: string, event: string, data: any) {
+export async function triggerWebhooks(db: TenantPrismaClient, event: string, data: any) {
   try {
-    const webhooks = await prisma.webhook.findMany({
+    const webhooks = await db.webhook.findMany({
       where: {
-        organizationId: orgId,
         isActive: true,
         OR: [
           { events: { has: '*' } },
@@ -274,7 +280,7 @@ export async function triggerWebhooks(orgId: string, event: string, data: any) {
     };
     for (const webhook of webhooks) {
       // Fire and forget - no await
-      deliverWebhook(webhook, payload).then(result => {
+      deliverWebhook(db, webhook, payload).then(result => {
         if (!result.success) {
           console.log(`Webhook delivery failed for ${webhook.id}:`, result.error);
         }
@@ -286,12 +292,13 @@ export async function triggerWebhooks(orgId: string, event: string, data: any) {
 }
 
 // Incoming webhook handler (for receiving data from external services)
-router.post('/incoming/:webhookId', async (req: Request, res: Response) => {
+// TODO: This is behind JWT auth. Can't be called without a JWT bound to a user
+router.post('/incoming/:webhookId', async (req: TenantRequest, res: Response) => {
   try {
     const { webhookId } = req.params;
     const signature = req.headers['x-webhook-signature'] as string;
 
-    const webhook = await prisma.webhook.findUnique({
+    const webhook = await req.db.webhook.findUnique({
       where: { id: webhookId }
     });
 

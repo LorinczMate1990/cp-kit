@@ -37,7 +37,7 @@ function generateDailyReports() {
           }
         }).then(admins => {
           admins.forEach(admin => {
-            sendReportEmail(admin.email, reportPath);
+            sendReportEmail(admin.tenantId, admin.email, reportPath);
           });
         }).catch(e => {
           console.log('Failed to get admins:', e);
@@ -104,7 +104,7 @@ function generateOrgReport(orgId: string, callback: (err: any, path?: string) =>
   }).catch(err => callback(err));
 }
 
-function sendReportEmail(email: string, reportPath: string) {
+function sendReportEmail(tenantId: string, email: string, reportPath: string) {
   let reportContent: string;
   try {
     reportContent = fs.readFileSync(reportPath, 'utf8');
@@ -117,6 +117,7 @@ function sendReportEmail(email: string, reportPath: string) {
   prisma.emailQueue.create({
     data: {
       id: require('uuid').v4(),
+      tenantId,
       to: email,
       subject: 'Your Daily InsightHub Report',
       body: `

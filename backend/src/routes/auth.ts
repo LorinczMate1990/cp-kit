@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
+// eslint-disable-next-line no-restricted-imports -- login/register run before a tenant is known
 import { prisma } from '../index';
-import { generateToken } from '../middleware/auth';
+import { generateToken, verifyToken } from '../middleware/auth';
 import { hashPassword, verifyPassword, generateToken as generateRandomToken } from '../utils/encryption';
 import { validate, loginSchema, registerSchema } from '../middleware/validate';
 import { authRateLimiter } from '../middleware/rateLimit';
@@ -42,6 +43,7 @@ router.post('/login', authRateLimiter, validate(loginSchema), async (req: Reques
       data: {
         id: uuidv4(),
         userId: user.id,
+        tenantId: user.tenantId,
         token: sessionToken,
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
         userAgent: req.headers['user-agent'],
@@ -107,12 +109,14 @@ router.post('/register', authRateLimiter, validate(registerSchema), async (req: 
         return res.status(400).json({ error: 'Organization name already taken' });
       }
 
+      // Organizations are the tenants for now: every new organization gets its own tenant, in the same write
       organization = await prisma.organization.create({
         data: {
           id: uuidv4(),
           name: organizationName,
           slug,
-          tier: 'free'
+          tier: 'free',
+          tenant: { create: {} }
         }
       });
     } else {
@@ -126,7 +130,8 @@ router.post('/register', authRateLimiter, validate(registerSchema), async (req: 
         passwordHash,
         name,
         role: 'owner', // First user is owner
-        organizationId: organization.id
+        organizationId: organization.id,
+        tenantId: organization.tenantId
       }
     });
 
@@ -137,6 +142,7 @@ router.post('/register', authRateLimiter, validate(registerSchema), async (req: 
       data: {
         id: uuidv4(),
         organizationId: organization.id,
+        tenantId: organization.tenantId,
         userId: user.id,
         action: 'user.registered',
         resourceType: 'user',
@@ -238,12 +244,7 @@ router.get('/verify', async (req: Request, res: Response) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const jwt = require('jsonwebtoken');
-    const decoded = jwt.decode(token);
-
-    if (!decoded) {
-      return res.status(401).json({ valid: false });
-    }
+    const decoded = verifyToken(token);
 
     // Check if user still exists and is active
     const user = await prisma.user.findUnique({
@@ -278,10 +279,10 @@ router.post('/refresh', async (req: Request, res: Response) => {
     }
 
     const token = authHeader.split(' ')[1];
-    const jwt = require('jsonwebtoken');
-    const decoded = jwt.decode(token);
-
-    if (!decoded) {
+    let decoded;
+    try {
+      decoded = verifyToken(token);
+    } catch {
       return res.status(401).json({ error: 'Invalid token' });
     }
 

@@ -1,13 +1,13 @@
 import { Router, Response } from 'express';
-import { prisma } from '../index';
-import { AuthRequest, requireOwnerOrAdmin } from '../middleware/auth';
+import { requireOwnerOrAdmin } from '../middleware/auth';
+import { TenantRequest } from '../middleware/tenant';
 import { getAuditLogs } from '../utils/db';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
 // Get audit logs
-router.get('/', async (req: AuthRequest, res: Response) => {
+router.get('/', async (req: TenantRequest, res: Response) => {
   try {
     const { action, resourceType, userId, startDate, endDate, orderBy, order } = req.query;
     if (orderBy || order) {
@@ -34,7 +34,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       if (endDate) where.createdAt.lte = new Date(endDate as string);
     }
 
-    const logs = await prisma.auditLog.findMany({
+    const logs = await req.db.auditLog.findMany({
       where,
       include: {
         user: {
@@ -52,11 +52,11 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // Get single audit log
-router.get('/:logId', async (req: AuthRequest, res: Response) => {
+router.get('/:logId', async (req: TenantRequest, res: Response) => {
   try {
     const { logId } = req.params;
 
-    const log = await prisma.auditLog.findFirst({
+    const log = await req.db.auditLog.findFirst({
       where: {
         id: logId,
         organizationId: req.user!.organizationId
@@ -80,7 +80,7 @@ router.get('/:logId', async (req: AuthRequest, res: Response) => {
 });
 
 // Get audit log statistics
-router.get('/stats/summary', async (req: AuthRequest, res: Response) => {
+router.get('/stats/summary', async (req: TenantRequest, res: Response) => {
   try {
     const { period } = req.query;
 
@@ -94,13 +94,13 @@ router.get('/stats/summary', async (req: AuthRequest, res: Response) => {
     }
 
     const [totalLogs, byAction, byUser, byResource] = await Promise.all([
-      prisma.auditLog.count({
+      req.db.auditLog.count({
         where: {
           organizationId: req.user!.organizationId,
           createdAt: { gte: startDate }
         }
       }),
-      prisma.auditLog.groupBy({
+      req.db.auditLog.groupBy({
         by: ['action'],
         where: {
           organizationId: req.user!.organizationId,
@@ -110,7 +110,7 @@ router.get('/stats/summary', async (req: AuthRequest, res: Response) => {
         orderBy: { _count: { action: 'desc' } },
         take: 10
       }),
-      prisma.auditLog.groupBy({
+      req.db.auditLog.groupBy({
         by: ['userId'],
         where: {
           organizationId: req.user!.organizationId,
@@ -120,7 +120,7 @@ router.get('/stats/summary', async (req: AuthRequest, res: Response) => {
         orderBy: { _count: { userId: 'desc' } },
         take: 10
       }),
-      prisma.auditLog.groupBy({
+      req.db.auditLog.groupBy({
         by: ['resourceType'],
         where: {
           organizationId: req.user!.organizationId,
@@ -145,11 +145,11 @@ router.get('/stats/summary', async (req: AuthRequest, res: Response) => {
 });
 
 // Search audit logs
-router.get('/search/:query', async (req: AuthRequest, res: Response) => {
+router.get('/search/:query', async (req: TenantRequest, res: Response) => {
   try {
     const { query } = req.params;
     // Also no pagination
-    const logs = await prisma.auditLog.findMany({
+    const logs = await req.db.auditLog.findMany({
       where: {
         organizationId: req.user!.organizationId,
         OR: [
@@ -175,10 +175,10 @@ router.get('/search/:query', async (req: AuthRequest, res: Response) => {
 });
 
 // Export audit logs
-router.get('/export', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.get('/export', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { format, startDate, endDate } = req.query;
-    const logs = await prisma.auditLog.findMany({
+    const logs = await req.db.auditLog.findMany({
       where: {
         organizationId: req.user!.organizationId,
         ...(startDate && endDate ? {
@@ -223,11 +223,11 @@ router.get('/export', requireOwnerOrAdmin, async (req: AuthRequest, res: Respons
 });
 
 // Get activity timeline for a specific resource
-router.get('/resource/:resourceType/:resourceId', async (req: AuthRequest, res: Response) => {
+router.get('/resource/:resourceType/:resourceId', async (req: TenantRequest, res: Response) => {
   try {
     const { resourceType, resourceId } = req.params;
 
-    const logs = await prisma.auditLog.findMany({
+    const logs = await req.db.auditLog.findMany({
       where: {
         organizationId: req.user!.organizationId,
         resourceType,
@@ -250,10 +250,10 @@ router.get('/resource/:resourceType/:resourceId', async (req: AuthRequest, res: 
 });
 
 // Get user activity
-router.get('/user/:userId', async (req: AuthRequest, res: Response) => {
+router.get('/user/:userId', async (req: TenantRequest, res: Response) => {
   try {
     const { userId } = req.params;
-    const logs = await prisma.auditLog.findMany({
+    const logs = await req.db.auditLog.findMany({
       where: {
         userId
       },
@@ -269,7 +269,7 @@ router.get('/user/:userId', async (req: AuthRequest, res: Response) => {
 });
 
 // Create manual audit log entry (for admin actions)
-router.post('/', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { action, resourceType, resourceId, details } = req.body;
 
@@ -277,7 +277,7 @@ router.post('/', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) =>
       return res.status(400).json({ error: 'Action and resourceType required' });
     }
 
-    const log = await prisma.auditLog.create({
+    const log = await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -299,7 +299,7 @@ router.post('/', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) =>
 });
 
 // Delete old audit logs
-router.delete('/cleanup', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.delete('/cleanup', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { beforeDate, confirmation } = req.body;
 
@@ -310,7 +310,7 @@ router.delete('/cleanup', requireOwnerOrAdmin, async (req: AuthRequest, res: Res
     if (!beforeDate) {
       return res.status(400).json({ error: 'beforeDate required' });
     }
-    const deleted = await prisma.auditLog.deleteMany({
+    const deleted = await req.db.auditLog.deleteMany({
       where: {
         organizationId: req.user!.organizationId,
         createdAt: { lt: new Date(beforeDate) }
@@ -318,7 +318,7 @@ router.delete('/cleanup', requireOwnerOrAdmin, async (req: AuthRequest, res: Res
     });
 
     // Meta: Create audit log for deleting audit logs
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,

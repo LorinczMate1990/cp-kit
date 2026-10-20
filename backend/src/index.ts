@@ -15,6 +15,7 @@ import auditRoutes from './routes/audit';
 import webhooksRoutes from './routes/webhooks';
 
 import { authMiddleware } from './middleware/auth';
+import { tenantMiddleware } from './middleware/tenant';
 import { rateLimiter } from './middleware/rateLimit';
 import { startNotificationJob } from './jobs/notifications';
 import { startReportJob } from './jobs/reports';
@@ -40,15 +41,15 @@ app.get('/health', (req, res) => {
 // Public routes
 app.use('/api/auth', authRoutes);
 
-// Protected routes
-app.use('/api/organizations', authMiddleware, organizationsRoutes);
-app.use('/api/users', authMiddleware, usersRoutes);
-app.use('/api/dashboards', authMiddleware, dashboardRoutes);
-app.use('/api/analytics', authMiddleware, analyticsRoutes);
-app.use('/api/billing', authMiddleware, billingRoutes);
-app.use('/api/notifications', authMiddleware, notificationsRoutes);
-app.use('/api/audit', authMiddleware, auditRoutes);
-app.use('/api/webhooks', authMiddleware, webhooksRoutes);
+// Protected routes (tenantMiddleware must come after authMiddleware: it reads req.user)
+app.use('/api/organizations', authMiddleware, tenantMiddleware, organizationsRoutes);
+app.use('/api/users', authMiddleware, tenantMiddleware, usersRoutes);
+app.use('/api/dashboards', authMiddleware, tenantMiddleware, dashboardRoutes);
+app.use('/api/analytics', authMiddleware, tenantMiddleware, analyticsRoutes);
+app.use('/api/billing', authMiddleware, tenantMiddleware, billingRoutes);
+app.use('/api/notifications', authMiddleware, tenantMiddleware, notificationsRoutes);
+app.use('/api/audit', authMiddleware, tenantMiddleware, auditRoutes);
+app.use('/api/webhooks', authMiddleware, tenantMiddleware, webhooksRoutes);
 
 // WebSocket handling
 const wsClients = new Map<string, Set<any>>();

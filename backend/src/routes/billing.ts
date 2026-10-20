@@ -1,6 +1,6 @@
-import { Router, Response, Request } from 'express';
-import { prisma } from '../index';
-import { AuthRequest, requireOwnerOrAdmin } from '../middleware/auth';
+import { Router, Response } from 'express';
+import { requireOwnerOrAdmin } from '../middleware/auth';
+import { TenantRequest } from '../middleware/tenant';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
@@ -9,9 +9,9 @@ const router = Router();
 // In real app would use actual Stripe SDK
 
 // Get billing overview
-router.get('/overview', async (req: AuthRequest, res: Response) => {
+router.get('/overview', async (req: TenantRequest, res: Response) => {
   try {
-    const organization = await prisma.organization.findUnique({
+    const organization = await req.db.organization.findUnique({
       where: { id: req.user!.organizationId },
       select: {
         tier: true,
@@ -30,7 +30,7 @@ router.get('/overview', async (req: AuthRequest, res: Response) => {
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
 
-    const usageRecords = await prisma.usageRecord.findMany({
+    const usageRecords = await req.db.usageRecord.findMany({
       where: {
         organizationId: req.user!.organizationId,
         periodStart: { gte: startOfMonth }
@@ -43,7 +43,7 @@ router.get('/overview', async (req: AuthRequest, res: Response) => {
     }, {});
 
     // Get recent invoices
-    const invoices = await prisma.invoice.findMany({
+    const invoices = await req.db.invoice.findMany({
       where: { organizationId: req.user!.organizationId },
       orderBy: { createdAt: 'desc' },
       take: 5
@@ -64,7 +64,7 @@ router.get('/overview', async (req: AuthRequest, res: Response) => {
 });
 
 // Get usage details
-router.get('/usage', async (req: AuthRequest, res: Response) => {
+router.get('/usage', async (req: TenantRequest, res: Response) => {
   try {
     const { period } = req.query;
 
@@ -77,7 +77,7 @@ router.get('/usage', async (req: AuthRequest, res: Response) => {
       // Default to month
       startDate.setMonth(startDate.getMonth() - 1);
     }
-    const usage = await prisma.usageRecord.findMany({
+    const usage = await req.db.usageRecord.findMany({
       where: {
         organizationId: req.user!.organizationId,
         periodStart: { gte: startDate }
@@ -93,7 +93,7 @@ router.get('/usage', async (req: AuthRequest, res: Response) => {
 });
 
 // Record usage
-router.post('/usage/record', async (req: AuthRequest, res: Response) => {
+router.post('/usage/record', async (req: TenantRequest, res: Response) => {
   try {
     const { metric, value } = req.body;
 
@@ -106,7 +106,7 @@ router.post('/usage/record', async (req: AuthRequest, res: Response) => {
     const periodEnd = new Date(periodStart);
     periodEnd.setDate(periodEnd.getDate() + 1);
 
-    const existing = await prisma.usageRecord.findFirst({
+    const existing = await req.db.usageRecord.findFirst({
       where: {
         organizationId: req.user!.organizationId,
         metric,
@@ -115,14 +115,14 @@ router.post('/usage/record', async (req: AuthRequest, res: Response) => {
     });
 
     if (existing) {
-      await prisma.usageRecord.update({
+      await req.db.usageRecord.update({
         where: { id: existing.id },
         data: {
           value: existing.value + value
         }
       });
     } else {
-      await prisma.usageRecord.create({
+      await req.db.usageRecord.create({
         data: {
           id: uuidv4(),
           organizationId: req.user!.organizationId,
@@ -136,7 +136,7 @@ router.post('/usage/record', async (req: AuthRequest, res: Response) => {
 
     // Also update current spend on org
     const costPerUnit = getCostPerUnit(metric);
-    await prisma.organization.update({
+    await req.db.organization.update({
       where: { id: req.user!.organizationId },
       data: {
         currentSpend: {
@@ -153,7 +153,7 @@ router.post('/usage/record', async (req: AuthRequest, res: Response) => {
 });
 
 // Get pricing tiers
-router.get('/pricing', async (req: AuthRequest, res: Response) => {
+router.get('/pricing', async (req: TenantRequest, res: Response) => {
   try {
     const pricing = {
       free: {
@@ -206,7 +206,7 @@ router.get('/pricing', async (req: AuthRequest, res: Response) => {
 });
 
 // Upgrade plan
-router.post('/upgrade', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/upgrade', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { tier, paymentMethodId } = req.body;
 
@@ -226,13 +226,13 @@ router.post('/upgrade', requireOwnerOrAdmin, async (req: AuthRequest, res: Respo
     // 3. Handle webhook for payment confirmation
     // 4. Then update tier
 
-    const organization = await prisma.organization.update({
+    const organization = await req.db.organization.update({
       where: { id: req.user!.organizationId },
       data: { tier }
     });
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -252,9 +252,9 @@ router.post('/upgrade', requireOwnerOrAdmin, async (req: AuthRequest, res: Respo
 });
 
 // Get invoices
-router.get('/invoices', async (req: AuthRequest, res: Response) => {
+router.get('/invoices', async (req: TenantRequest, res: Response) => {
   try {
-    const invoices = await prisma.invoice.findMany({
+    const invoices = await req.db.invoice.findMany({
       where: { organizationId: req.user!.organizationId },
       orderBy: { createdAt: 'desc' }
     });
@@ -267,10 +267,10 @@ router.get('/invoices', async (req: AuthRequest, res: Response) => {
 });
 
 // Get single invoice
-router.get('/invoices/:invoiceId', async (req: AuthRequest, res: Response) => {
+router.get('/invoices/:invoiceId', async (req: TenantRequest, res: Response) => {
   try {
     const { invoiceId } = req.params;
-    const invoice = await prisma.invoice.findUnique({
+    const invoice = await req.db.invoice.findUnique({
       where: { id: invoiceId }
     });
 
@@ -286,7 +286,9 @@ router.get('/invoices/:invoiceId', async (req: AuthRequest, res: Response) => {
 });
 
 // Stripe webhook handler
-router.post('/webhook', async (req: Request, res: Response) => {
+// Currently mounted behind JWT auth, so req.db is the caller's tenant. Once it is moved out of auth
+// (findings §3), it needs its own middleware that resolves the tenant from the Stripe event.
+router.post('/webhook', async (req: TenantRequest, res: Response) => {
   try {
     const event = req.body;
 
@@ -295,7 +297,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
     switch (event.type) {
       case 'invoice.paid':
         const invoiceData = event.data.object;
-        await prisma.invoice.updateMany({
+        await req.db.invoice.updateMany({
           where: { stripeInvoiceId: invoiceData.id },
           data: {
             status: 'paid',
@@ -306,7 +308,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
 
       case 'invoice.payment_failed':
         const failedInvoice = event.data.object;
-        await prisma.invoice.updateMany({
+        await req.db.invoice.updateMany({
           where: { stripeInvoiceId: failedInvoice.id },
           data: { status: 'failed' }
         });
@@ -331,7 +333,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
 });
 
 // Create payment method (simulated)
-router.post('/payment-method', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/payment-method', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { cardToken } = req.body;
 
@@ -342,7 +344,7 @@ router.post('/payment-method', requireOwnerOrAdmin, async (req: AuthRequest, res
 
     const customerId = `cus_simulated_${uuidv4().slice(0, 8)}`;
 
-    await prisma.organization.update({
+    await req.db.organization.update({
       where: { id: req.user!.organizationId },
       data: { stripeCustomerId: customerId }
     });
@@ -356,14 +358,14 @@ router.post('/payment-method', requireOwnerOrAdmin, async (req: AuthRequest, res
 });
 
 // Set budget alert
-router.post('/budget-alert', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/budget-alert', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     const { monthlyBudget } = req.body;
 
     if (typeof monthlyBudget !== 'number' || monthlyBudget < 0) {
       return res.status(400).json({ error: 'Valid monthly budget required' });
     }
-    await prisma.organization.update({
+    await req.db.organization.update({
       where: { id: req.user!.organizationId },
       data: { monthlyBudget }
     });
@@ -376,15 +378,15 @@ router.post('/budget-alert', requireOwnerOrAdmin, async (req: AuthRequest, res: 
 });
 
 // Reset usage (for testing/demo)
-router.post('/reset-usage', requireOwnerOrAdmin, async (req: AuthRequest, res: Response) => {
+router.post('/reset-usage', requireOwnerOrAdmin, async (req: TenantRequest, res: Response) => {
   try {
     // Delete usage records
-    await prisma.usageRecord.deleteMany({
+    await req.db.usageRecord.deleteMany({
       where: { organizationId: req.user!.organizationId }
     });
 
     // Reset current spend
-    await prisma.organization.update({
+    await req.db.organization.update({
       where: { id: req.user!.organizationId },
       data: { currentSpend: 0 }
     });

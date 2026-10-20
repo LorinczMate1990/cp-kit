@@ -1,16 +1,15 @@
 import { Router, Response } from 'express';
-import { prisma } from '../index';
-import { AuthRequest } from '../middleware/auth';
+import { TenantRequest } from '../middleware/tenant';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
 // Get comments for a resource
-router.get('/:resourceType/:resourceId', async (req: AuthRequest, res: Response) => {
+router.get('/:resourceType/:resourceId', async (req: TenantRequest, res: Response) => {
   try {
     const { resourceType, resourceId } = req.params;
 
-    const comments = await prisma.comment.findMany({
+    const comments = await req.db.comment.findMany({
       where: {
         resourceType,
         resourceId,
@@ -31,14 +30,14 @@ router.get('/:resourceType/:resourceId', async (req: AuthRequest, res: Response)
 });
 
 // Create comment
-router.post('/', async (req: AuthRequest, res: Response) => {
+router.post('/', async (req: TenantRequest, res: Response) => {
   try {
     const { content, resourceType, resourceId, parentId } = req.body;
     if (!content || !resourceType || !resourceId) {
       return res.status(400).json({ error: 'Content, resourceType, and resourceId required' });
     }
 
-    const comment = await prisma.comment.create({
+    const comment = await req.db.comment.create({
       data: {
         id: uuidv4(),
         content,
@@ -62,7 +61,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 });
 
 // Update comment
-router.put('/:commentId', async (req: AuthRequest, res: Response) => {
+router.put('/:commentId', async (req: TenantRequest, res: Response) => {
   try {
     const { commentId } = req.params;
     const { content } = req.body;
@@ -70,7 +69,7 @@ router.put('/:commentId', async (req: AuthRequest, res: Response) => {
     if (!content) {
       return res.status(400).json({ error: 'Content required' });
     }
-    const comment = await prisma.comment.findUnique({
+    const comment = await req.db.comment.findUnique({
       where: { id: commentId },
     });
 
@@ -82,7 +81,7 @@ router.put('/:commentId', async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ error: 'Not authorized to edit this comment' });
     }
 
-    const updated = await prisma.comment.update({
+    const updated = await req.db.comment.update({
       where: { id: commentId },
       data: { content },
       include: {
@@ -100,11 +99,11 @@ router.put('/:commentId', async (req: AuthRequest, res: Response) => {
 });
 
 // Delete comment
-router.delete('/:commentId', async (req: AuthRequest, res: Response) => {
+router.delete('/:commentId', async (req: TenantRequest, res: Response) => {
   try {
     const { commentId } = req.params;
 
-    const comment = await prisma.comment.findUnique({
+    const comment = await req.db.comment.findUnique({
       where: { id: commentId },
     });
 
@@ -115,7 +114,7 @@ router.delete('/:commentId', async (req: AuthRequest, res: Response) => {
     if (comment.userId !== req.user!.id) {
       return res.status(403).json({ error: 'Not authorized to delete this comment' });
     }
-    await prisma.comment.delete({
+    await req.db.comment.delete({
       where: { id: commentId },
     });
 

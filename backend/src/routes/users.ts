@@ -1,20 +1,19 @@
 import { Router, Response } from 'express';
-import { prisma } from '../index';
-import { AuthRequest } from '../middleware/auth';
+import { TenantRequest } from '../middleware/tenant';
+import { isNotFoundError } from '../utils/prismaErrors';
 import { hashPassword, verifyPassword } from '../utils/encryption';
-import { cache, cacheKeys } from '../utils/cache';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
 // Get current user
-router.get('/me', async (req: AuthRequest, res: Response) => {
+router.get('/me', async (req: TenantRequest, res: Response) => {
   try {
     if (!req.user) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
 
-    const user = await prisma.user.findUnique({
+    const user = await req.db.user.findUnique({
       where: { id: req.user.id },
       include: {
         organization: {
@@ -49,20 +48,17 @@ router.get('/me', async (req: AuthRequest, res: Response) => {
 });
 
 // Update current user
-router.put('/me', async (req: AuthRequest, res: Response) => {
+router.put('/me', async (req: TenantRequest, res: Response) => {
   try {
     const { name, avatarUrl } = req.body;
     const updateData: any = {};
     if (name !== undefined) updateData.name = name;
     if (avatarUrl !== undefined) updateData.avatarUrl = avatarUrl;
 
-    const user = await prisma.user.update({
+    const user = await req.db.user.update({
       where: { id: req.user!.id },
       data: updateData
     });
-
-    // Clear cache
-    cache.delete(cacheKeys.user(req.user!.id));
 
     res.json({
       id: user.id,
@@ -77,7 +73,7 @@ router.put('/me', async (req: AuthRequest, res: Response) => {
 });
 
 // Change password
-router.put('/me/password', async (req: AuthRequest, res: Response) => {
+router.put('/me/password', async (req: TenantRequest, res: Response) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
@@ -88,7 +84,7 @@ router.put('/me/password', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    const user = await prisma.user.findUnique({
+    const user = await req.db.user.findUnique({
       where: { id: req.user!.id }
     });
 
@@ -101,13 +97,13 @@ router.put('/me/password', async (req: AuthRequest, res: Response) => {
     }
     const newPasswordHash = hashPassword(newPassword);
 
-    await prisma.user.update({
+    await req.db.user.update({
       where: { id: req.user!.id },
       data: { passwordHash: newPasswordHash }
     });
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -126,11 +122,11 @@ router.put('/me/password', async (req: AuthRequest, res: Response) => {
 });
 
 // Get user by ID
-router.get('/:userId', async (req: AuthRequest, res: Response) => {
+router.get('/:userId', async (req: TenantRequest, res: Response) => {
   try {
     const { userId } = req.params;
 
-    const user = await prisma.user.findUnique({
+    const user = await req.db.user.findUnique({
       where: { id: userId },
       select: {
         id: true,
@@ -165,10 +161,10 @@ router.get('/:userId', async (req: AuthRequest, res: Response) => {
 });
 
 // Search users
-router.get('/search/:query', async (req: AuthRequest, res: Response) => {
+router.get('/search/:query', async (req: TenantRequest, res: Response) => {
   try {
     const { query } = req.params;
-    const users = await prisma.user.findMany({
+    const users = await req.db.user.findMany({
       where: {
         OR: [
           { name: { contains: query, mode: 'insensitive' } },
@@ -195,9 +191,9 @@ router.get('/search/:query', async (req: AuthRequest, res: Response) => {
 });
 
 // Get user's sessions
-router.get('/me/sessions', async (req: AuthRequest, res: Response) => {
+router.get('/me/sessions', async (req: TenantRequest, res: Response) => {
   try {
-    const sessions = await prisma.session.findMany({
+    const sessions = await req.db.session.findMany({
       where: { userId: req.user!.id },
       select: {
         id: true,
@@ -217,29 +213,32 @@ router.get('/me/sessions', async (req: AuthRequest, res: Response) => {
 });
 
 // Revoke session
-router.delete('/me/sessions/:sessionId', async (req: AuthRequest, res: Response) => {
+router.delete('/me/sessions/:sessionId', async (req: TenantRequest, res: Response) => {
   try {
     const { sessionId } = req.params;
-    // Could revoke other users' sessions!
-    await prisma.session.delete({
-      where: { id: sessionId }
+    // Session has no organizationId, so req.db does not scope it: restrict to the caller's own sessions
+    await req.db.session.delete({
+      where: { id: sessionId, userId: req.user!.id }
     });
 
     res.json({ message: 'Session revoked' });
   } catch (error) {
+    if (isNotFoundError(error)) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
     console.error('Revoke session error:', error);
     res.status(500).json({ error: 'Failed to revoke session' });
   }
 });
 
 // Revoke all sessions
-router.delete('/me/sessions', async (req: AuthRequest, res: Response) => {
+router.delete('/me/sessions', async (req: TenantRequest, res: Response) => {
   try {
     const { keepCurrent } = req.query;
 
     const currentToken = req.headers.authorization?.split(' ')[1];
 
-    await prisma.session.deleteMany({
+    await req.db.session.deleteMany({
       where: {
         userId: req.user!.id,
         ...(keepCurrent === 'true' && currentToken ? {
@@ -256,7 +255,7 @@ router.delete('/me/sessions', async (req: AuthRequest, res: Response) => {
 });
 
 // Get user preferences (would be in a separate table in real app)
-router.get('/me/preferences', async (req: AuthRequest, res: Response) => {
+router.get('/me/preferences', async (req: TenantRequest, res: Response) => {
   try {
     res.json({
       theme: 'light',
@@ -272,7 +271,7 @@ router.get('/me/preferences', async (req: AuthRequest, res: Response) => {
 });
 
 // Update user preferences
-router.put('/me/preferences', async (req: AuthRequest, res: Response) => {
+router.put('/me/preferences', async (req: TenantRequest, res: Response) => {
   try {
     // Just echoing back what was sent
     const preferences = req.body;
@@ -288,7 +287,7 @@ router.put('/me/preferences', async (req: AuthRequest, res: Response) => {
 });
 
 // Delete account
-router.delete('/me', async (req: AuthRequest, res: Response) => {
+router.delete('/me', async (req: TenantRequest, res: Response) => {
   try {
     const { password, confirmation } = req.body;
 
@@ -300,7 +299,7 @@ router.delete('/me', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Please confirm by typing DELETE' });
     }
 
-    const user = await prisma.user.findUnique({
+    const user = await req.db.user.findUnique({
       where: { id: req.user!.id }
     });
 
@@ -314,7 +313,7 @@ router.delete('/me', async (req: AuthRequest, res: Response) => {
 
     // Check if user is the only owner
     if (user.role === 'owner') {
-      const ownerCount = await prisma.user.count({
+      const ownerCount = await req.db.user.count({
         where: {
           organizationId: user.organizationId,
           role: 'owner',
@@ -328,7 +327,7 @@ router.delete('/me', async (req: AuthRequest, res: Response) => {
         });
       }
     }
-    await prisma.user.delete({
+    await req.db.user.delete({
       where: { id: req.user!.id }
     });
 

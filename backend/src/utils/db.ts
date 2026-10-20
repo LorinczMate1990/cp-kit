@@ -107,17 +107,19 @@ export async function safeGetAnalytics(
 export async function bulkInsertEvents(
   events: Array<{
     organizationId: string;
+    tenantId: string;
     eventType: string;
     eventName: string;
     properties: any;
   }>
 ): Promise<void> {
+  // Raw SQL bypasses req.db, so tenantId must be set here by hand
   const values = events.map(e =>
-    `('${e.organizationId}', '${e.eventType}', '${e.eventName}', '${JSON.stringify(e.properties)}'::jsonb, NOW())`
+    `('${e.organizationId}', '${e.tenantId}', '${e.eventType}', '${e.eventName}', '${JSON.stringify(e.properties)}'::jsonb, NOW())`
   ).join(',');
 
   const query = `
-    INSERT INTO "AnalyticsEvent" ("organizationId", "eventType", "eventName", properties, timestamp)
+    INSERT INTO "AnalyticsEvent" ("organizationId", "tenantId", "eventType", "eventName", properties, timestamp)
     VALUES ${values}
   `;
 

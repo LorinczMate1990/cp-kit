@@ -1,21 +1,22 @@
 import { Router, Response } from 'express';
-import { prisma } from '../index';
-import { AuthRequest, apiKeyMiddleware } from '../middleware/auth';
+import { apiKeyMiddleware } from '../middleware/auth';
+import { TenantRequest, tenantMiddleware } from '../middleware/tenant';
 import { getAnalyticsByFilter, searchEvents, bulkInsertEvents } from '../utils/db';
 import { cache, cacheKeys } from '../utils/cache';
+import { CACHE_TTL } from '../constants/shared';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
 // Track analytics event
-router.post('/track', async (req: AuthRequest, res: Response) => {
+router.post('/track', async (req: TenantRequest, res: Response) => {
   try {
     const { eventType, eventName, properties, userId, sessionId, timestamp } = req.body;
     if (!eventType || !eventName) {
       return res.status(400).json({ error: 'eventType and eventName required' });
     }
 
-    const event = await prisma.analyticsEvent.create({
+    const event = await req.db.analyticsEvent.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -30,7 +31,7 @@ router.post('/track', async (req: AuthRequest, res: Response) => {
     });
 
     // Increment usage counter
-    await prisma.organization.update({
+    await req.db.organization.update({
       where: { id: req.user!.organizationId },
       data: {
         currentSpend: {
@@ -47,7 +48,7 @@ router.post('/track', async (req: AuthRequest, res: Response) => {
 });
 
 // Batch track events
-router.post('/track/batch', async (req: AuthRequest, res: Response) => {
+router.post('/track/batch', async (req: TenantRequest, res: Response) => {
   try {
     const { events } = req.body;
     if (!Array.isArray(events)) {
@@ -56,6 +57,7 @@ router.post('/track/batch', async (req: AuthRequest, res: Response) => {
     await bulkInsertEvents(
       events.map((e: any) => ({
         organizationId: req.user!.organizationId,
+        tenantId: req.user!.tenantId,
         eventType: e.eventType || 'unknown',
         eventName: e.eventName || 'unknown',
         properties: e.properties || {}
@@ -63,7 +65,7 @@ router.post('/track/batch', async (req: AuthRequest, res: Response) => {
     );
 
     // Increment usage
-    await prisma.organization.update({
+    await req.db.organization.update({
       where: { id: req.user!.organizationId },
       data: {
         currentSpend: {
@@ -80,7 +82,7 @@ router.post('/track/batch', async (req: AuthRequest, res: Response) => {
 });
 
 // Get analytics data
-router.get('/data', async (req: AuthRequest, res: Response) => {
+router.get('/data', async (req: TenantRequest, res: Response) => {
   try {
     const { eventType, startDate, endDate, groupBy } = req.query;
     if (eventType && startDate && endDate) {
@@ -95,7 +97,7 @@ router.get('/data', async (req: AuthRequest, res: Response) => {
     }
 
     // Default query with Prisma (safe)
-    const events = await prisma.analyticsEvent.findMany({
+    const events = await req.db.analyticsEvent.findMany({
       where: {
         organizationId: req.user!.organizationId,
         ...(eventType ? { eventType: eventType as string } : {})
@@ -111,7 +113,7 @@ router.get('/data', async (req: AuthRequest, res: Response) => {
 });
 
 // Search events
-router.get('/search', async (req: AuthRequest, res: Response) => {
+router.get('/search', async (req: TenantRequest, res: Response) => {
   try {
     const { q } = req.query;
 
@@ -130,14 +132,17 @@ router.get('/search', async (req: AuthRequest, res: Response) => {
   }
 });
 
+const STATS_PERIODS = ['hour', 'day', 'week', 'month'];
+
 // Get aggregated stats
-router.get('/stats', async (req: AuthRequest, res: Response) => {
+router.get('/stats', async (req: TenantRequest, res: Response) => {
   try {
-    const { period } = req.query;
+    // Only known periods: the period is part of the cache key, so arbitrary values would create unbounded keys
+    const period = STATS_PERIODS.includes(req.query.period as string) ? (req.query.period as string) : 'day';
 
     // Check cache
-    const cacheKey = cacheKeys.orgAnalytics(req.user!.organizationId, period as string || 'day');
-    const cached = cache.get(cacheKey);
+    const cacheKey = cacheKeys.orgAnalytics(req.user!.organizationId, period);
+    const cached = await cache.get(cacheKey);
     if (cached) {
       return res.json(cached);
     }
@@ -161,13 +166,13 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
     }
 
     const [totalEvents, eventsByType, recentEvents] = await Promise.all([
-      prisma.analyticsEvent.count({
+      req.db.analyticsEvent.count({
         where: {
           organizationId: req.user!.organizationId,
           timestamp: { gte: startDate }
         }
       }),
-      prisma.analyticsEvent.groupBy({
+      req.db.analyticsEvent.groupBy({
         by: ['eventType'],
         where: {
           organizationId: req.user!.organizationId,
@@ -177,7 +182,7 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
         orderBy: { _count: { eventType: 'desc' } },
         take: 10
       }),
-      prisma.analyticsEvent.findMany({
+      req.db.analyticsEvent.findMany({
         where: {
           organizationId: req.user!.organizationId
         },
@@ -190,11 +195,10 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
       totalEvents,
       eventsByType,
       recentEvents,
-      period: period || 'day'
+      period
     };
 
-    // Cache for 60 seconds
-    cache.set(cacheKey, stats, 60);
+    await cache.set(cacheKey, stats, CACHE_TTL.ANALYTICS);
 
     res.json(stats);
   } catch (error) {
@@ -204,9 +208,9 @@ router.get('/stats', async (req: AuthRequest, res: Response) => {
 });
 
 // Get event types
-router.get('/event-types', async (req: AuthRequest, res: Response) => {
+router.get('/event-types', async (req: TenantRequest, res: Response) => {
   try {
-    const eventTypes = await prisma.analyticsEvent.findMany({
+    const eventTypes = await req.db.analyticsEvent.findMany({
       where: { organizationId: req.user!.organizationId },
       distinct: ['eventType'],
       select: { eventType: true }
@@ -220,7 +224,7 @@ router.get('/event-types', async (req: AuthRequest, res: Response) => {
 });
 
 // Delete events (admin only)
-router.delete('/events', async (req: AuthRequest, res: Response) => {
+router.delete('/events', async (req: TenantRequest, res: Response) => {
   try {
     const { eventType, before, confirmation } = req.body;
 
@@ -241,10 +245,10 @@ router.delete('/events', async (req: AuthRequest, res: Response) => {
       where.timestamp = { lt: new Date(before) };
     }
 
-    const deleted = await prisma.analyticsEvent.deleteMany({ where });
+    const deleted = await req.db.analyticsEvent.deleteMany({ where });
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -263,12 +267,12 @@ router.delete('/events', async (req: AuthRequest, res: Response) => {
 });
 
 // Export analytics data as CSV
-router.get('/export', async (req: AuthRequest, res: Response) => {
+router.get('/export', async (req: TenantRequest, res: Response) => {
   try {
     const { startDate, endDate } = req.query;
 
     // Fetch ALL events into memory
-    const events = await prisma.analyticsEvent.findMany({
+    const events = await req.db.analyticsEvent.findMany({
       where: {
         organizationId: req.user!.organizationId,
         ...(startDate && endDate ? {
@@ -310,12 +314,12 @@ router.get('/export', async (req: AuthRequest, res: Response) => {
 });
 
 // Real-time analytics endpoint (for dashboard widgets)
-router.get('/realtime', async (req: AuthRequest, res: Response) => {
+router.get('/realtime', async (req: TenantRequest, res: Response) => {
   try {
     // Get events from last 5 minutes
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
-    const events = await prisma.analyticsEvent.findMany({
+    const events = await req.db.analyticsEvent.findMany({
       where: {
         organizationId: req.user!.organizationId,
         timestamp: { gte: fiveMinutesAgo }
@@ -342,7 +346,7 @@ router.get('/realtime', async (req: AuthRequest, res: Response) => {
 });
 
 // Funnel analysis
-router.post('/funnel', async (req: AuthRequest, res: Response) => {
+router.post('/funnel', async (req: TenantRequest, res: Response) => {
   try {
     const { steps, startDate, endDate } = req.body;
     if (!Array.isArray(steps) || steps.length < 2) {
@@ -351,7 +355,7 @@ router.post('/funnel', async (req: AuthRequest, res: Response) => {
     const funnelData: any[] = [];
 
     for (const step of steps) {
-      const count = await prisma.analyticsEvent.count({
+      const count = await req.db.analyticsEvent.count({
         where: {
           organizationId: req.user!.organizationId,
           eventName: step,
@@ -375,7 +379,8 @@ router.post('/funnel', async (req: AuthRequest, res: Response) => {
 });
 
 // API endpoint for external tracking (uses API key instead of JWT)
-router.post('/v1/track', apiKeyMiddleware, async (req: AuthRequest, res: Response) => {
+// apiKeyMiddleware replaces req.user, so tenantMiddleware runs again to scope req.db to the key's organization
+router.post('/v1/track', apiKeyMiddleware, tenantMiddleware, async (req: TenantRequest, res: Response) => {
   try {
     const { eventType, eventName, properties, userId, sessionId } = req.body;
 
@@ -383,7 +388,7 @@ router.post('/v1/track', apiKeyMiddleware, async (req: AuthRequest, res: Respons
       return res.status(400).json({ error: 'eventType and eventName required' });
     }
 
-    const event = await prisma.analyticsEvent.create({
+    const event = await req.db.analyticsEvent.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,

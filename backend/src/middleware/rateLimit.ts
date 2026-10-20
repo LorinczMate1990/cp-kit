@@ -1,90 +1,45 @@
 import { Request, Response, NextFunction } from 'express';
+import { redis } from '../utils/redis';
+import { RATE_LIMITS } from '../constants/shared';
 
-interface RateLimitEntry {
-  count: number;
-  firstRequest: number;
-}
-const requestCounts = new Map<string, RateLimitEntry>();
+// Fixed-window counters in Redis, shared by all instances (see ai-instructions/adr/stateless-backend.md).
+// The window's TTL is set atomically with the first hit, so counters always expire.
 
-const WINDOW_MS = 60 * 1000; // 1 minute
-const MAX_REQUESTS = 100; // 100 requests per minute
+const WINDOW_SECONDS = 60;
 
-export const rateLimiter = (req: Request, res: Response, next: NextFunction) => {
-  const clientKey = req.ip || req.connection.remoteAddress || 'unknown';
-
-  const now = Date.now();
-  const entry = requestCounts.get(clientKey);
-
-  if (!entry) {
-    // First request from this client
-    requestCounts.set(clientKey, {
-      count: 1,
-      firstRequest: now
-    });
-    next();
-    return;
+// Counts a request and returns the count in the current window and the seconds left, or null if Redis is unavailable
+const hit = async (key: string): Promise<{ count: number; secondsLeft: number } | null> => {
+  try {
+    const [count, , secondsLeft] = (await redis
+      .multi()
+      .incr(key)
+      .expire(key, WINDOW_SECONDS, 'NX')
+      .ttl(key)
+      .exec()) as number[];
+    return { count, secondsLeft };
+  } catch (error) {
+    console.error('Rate limit check failed:', (error as Error).message);
+    return null;
   }
-
-  // Check if window has expired
-  if (now - entry.firstRequest > WINDOW_MS) {
-    requestCounts.set(clientKey, {
-      count: 1,
-      firstRequest: now
-    });
-    next();
-    return;
-  }
-
-  // Within window, increment count
-  entry.count++;
-
-  if (entry.count > MAX_REQUESTS) {
-    return res.status(429).json({
-      error: 'Too many requests',
-      retryAfter: Math.ceil((entry.firstRequest + WINDOW_MS - now) / 1000)
-    });
-  }
-
-  next();
 };
-export const cleanupRateLimits = () => {
-  const now = Date.now();
-  for (const [key, entry] of requestCounts.entries()) {
-    if (now - entry.firstRequest > WINDOW_MS * 2) {
-      requestCounts.delete(key);
+
+const createRateLimiter = (name: string, maxRequests: number, message: string) =>
+  async (req: Request, res: Response, next: NextFunction) => {
+    const result = await hit(`ratelimit:${name}:${req.ip || 'unknown'}`);
+
+    // Fail open: if Redis is unavailable, requests are not rate limited rather than all rejected
+    if (result && result.count > maxRequests) {
+      return res.status(429).json({ error: message, retryAfter: result.secondsLeft });
     }
-  }
-};
+
+    next();
+  };
+
+export const rateLimiter = createRateLimiter('api', RATE_LIMITS.GENERAL, 'Too many requests');
 
 // Stricter rate limit for auth endpoints
-export const authRateLimiter = (req: Request, res: Response, next: NextFunction) => {
-  const clientKey = `auth:${req.ip || 'unknown'}`;
-  const now = Date.now();
-  const entry = requestCounts.get(clientKey);
-
-  // Only 10 auth attempts per minute
-  const AUTH_MAX_REQUESTS = 10;
-
-  if (!entry) {
-    requestCounts.set(clientKey, { count: 1, firstRequest: now });
-    next();
-    return;
-  }
-
-  if (now - entry.firstRequest > WINDOW_MS) {
-    requestCounts.set(clientKey, { count: 1, firstRequest: now });
-    next();
-    return;
-  }
-
-  entry.count++;
-
-  if (entry.count > AUTH_MAX_REQUESTS) {
-    console.log(`Rate limited auth attempt from ${req.ip}`);
-    return res.status(429).json({
-      error: 'Too many authentication attempts. Please try again later.'
-    });
-  }
-
-  next();
-};
+export const authRateLimiter = createRateLimiter(
+  'auth',
+  RATE_LIMITS.AUTH,
+  'Too many authentication attempts. Please try again later.'
+);

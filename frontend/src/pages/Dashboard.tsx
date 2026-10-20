@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useDashboardStore } from '../store/dashboardSlice';
 import {
@@ -133,9 +133,9 @@ export default function Dashboard() {
         // Dashboard list
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {dashboards.map((dashboard) => (
-            <a
+            <Link
               key={dashboard.id}
-              href={`/dashboard/${dashboard.id}`}
+              to={`/dashboard/${dashboard.id}`}
               className="block bg-white rounded-lg shadow-md p-4 hover:shadow-lg transition-shadow"
             >
               <h2 className="text-lg font-semibold">{dashboard.name}</h2>
@@ -145,7 +145,7 @@ export default function Dashboard() {
               <div className="mt-2 text-sm text-gray-400">
                 {dashboard._count?.widgets || 0} widgets
               </div>
-            </a>
+            </Link>
           ))}
 
           {dashboards.length === 0 && (

@@ -1,16 +1,16 @@
 import { Router, Response } from 'express';
-import { prisma } from '../index';
-import { AuthRequest } from '../middleware/auth';
+import { TenantRequest } from '../middleware/tenant';
+import { isNotFoundError } from '../utils/prismaErrors';
 import { broadcastToOrg } from '../index';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
 // Get user's notifications
-router.get('/', async (req: AuthRequest, res: Response) => {
+router.get('/', async (req: TenantRequest, res: Response) => {
   try {
     const { unreadOnly, limit } = req.query;
-    const notifications = await prisma.notification.findMany({
+    const notifications = await req.db.notification.findMany({
       where: {
         userId: req.user!.id,
         ...(unreadOnly === 'true' ? { isRead: false } : {})
@@ -27,9 +27,9 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // Get unread count
-router.get('/unread-count', async (req: AuthRequest, res: Response) => {
+router.get('/unread-count', async (req: TenantRequest, res: Response) => {
   try {
-    const count = await prisma.notification.count({
+    const count = await req.db.notification.count({
       where: {
         userId: req.user!.id,
         isRead: false
@@ -44,26 +44,28 @@ router.get('/unread-count', async (req: AuthRequest, res: Response) => {
 });
 
 // Mark notification as read
-router.put('/:notificationId/read', async (req: AuthRequest, res: Response) => {
+router.put('/:notificationId/read', async (req: TenantRequest, res: Response) => {
   try {
     const { notificationId } = req.params;
-    // Can mark other users' notifications as read!
-    const notification = await prisma.notification.update({
-      where: { id: notificationId },
+    const notification = await req.db.notification.update({
+      where: { id: notificationId, userId: req.user!.id },
       data: { isRead: true }
     });
 
     res.json(notification);
   } catch (error) {
+    if (isNotFoundError(error)) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
     console.error('Mark read error:', error);
     res.status(500).json({ error: 'Failed to mark notification as read' });
   }
 });
 
 // Mark all as read
-router.put('/mark-all-read', async (req: AuthRequest, res: Response) => {
+router.put('/mark-all-read', async (req: TenantRequest, res: Response) => {
   try {
-    await prisma.notification.updateMany({
+    await req.db.notification.updateMany({
       where: {
         userId: req.user!.id,
         isRead: false
@@ -79,24 +81,27 @@ router.put('/mark-all-read', async (req: AuthRequest, res: Response) => {
 });
 
 // Delete notification
-router.delete('/:notificationId', async (req: AuthRequest, res: Response) => {
+router.delete('/:notificationId', async (req: TenantRequest, res: Response) => {
   try {
     const { notificationId } = req.params;
-    await prisma.notification.delete({
-      where: { id: notificationId }
+    await req.db.notification.delete({
+      where: { id: notificationId, userId: req.user!.id }
     });
 
     res.json({ message: 'Notification deleted' });
   } catch (error) {
+    if (isNotFoundError(error)) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
     console.error('Delete notification error:', error);
     res.status(500).json({ error: 'Failed to delete notification' });
   }
 });
 
 // Delete all notifications
-router.delete('/', async (req: AuthRequest, res: Response) => {
+router.delete('/', async (req: TenantRequest, res: Response) => {
   try {
-    await prisma.notification.deleteMany({
+    await req.db.notification.deleteMany({
       where: { userId: req.user!.id }
     });
 
@@ -108,7 +113,7 @@ router.delete('/', async (req: AuthRequest, res: Response) => {
 });
 
 // Create notification (internal use)
-router.post('/', async (req: AuthRequest, res: Response) => {
+router.post('/', async (req: TenantRequest, res: Response) => {
   try {
     const { userId, type, title, message, link } = req.body;
     if (!title || !message) {
@@ -116,7 +121,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
     }
 
     // Verify user is in same org
-    const targetUser = await prisma.user.findFirst({
+    const targetUser = await req.db.user.findFirst({
       where: {
         id: userId || req.user!.id,
         organizationId: req.user!.organizationId
@@ -127,7 +132,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: 'User not found in organization' });
     }
 
-    const notification = await prisma.notification.create({
+    const notification = await req.db.notification.create({
       data: {
         id: uuidv4(),
         userId: targetUser.id,
@@ -154,7 +159,7 @@ router.post('/', async (req: AuthRequest, res: Response) => {
 });
 
 // Broadcast notification to all org members
-router.post('/broadcast', async (req: AuthRequest, res: Response) => {
+router.post('/broadcast', async (req: TenantRequest, res: Response) => {
   try {
     const { type, title, message, link } = req.body;
     if (!title || !message) {
@@ -162,7 +167,7 @@ router.post('/broadcast', async (req: AuthRequest, res: Response) => {
     }
 
     // Get all users in org
-    const users = await prisma.user.findMany({
+    const users = await req.db.user.findMany({
       where: {
         organizationId: req.user!.organizationId,
         isActive: true
@@ -171,7 +176,7 @@ router.post('/broadcast', async (req: AuthRequest, res: Response) => {
     });
     const notifications = [];
     for (const user of users) {
-      const notification = await prisma.notification.create({
+      const notification = await req.db.notification.create({
         data: {
           id: uuidv4(),
           userId: user.id,
@@ -199,7 +204,7 @@ router.post('/broadcast', async (req: AuthRequest, res: Response) => {
 });
 
 // Get notification preferences
-router.get('/preferences', async (req: AuthRequest, res: Response) => {
+router.get('/preferences', async (req: TenantRequest, res: Response) => {
   try {
     res.json({
       email: {
@@ -222,7 +227,7 @@ router.get('/preferences', async (req: AuthRequest, res: Response) => {
 });
 
 // Update notification preferences
-router.put('/preferences', async (req: AuthRequest, res: Response) => {
+router.put('/preferences', async (req: TenantRequest, res: Response) => {
   try {
     const preferences = req.body;
 
@@ -237,9 +242,9 @@ router.put('/preferences', async (req: AuthRequest, res: Response) => {
 });
 
 // Test notification (for debugging)
-router.post('/test', async (req: AuthRequest, res: Response) => {
+router.post('/test', async (req: TenantRequest, res: Response) => {
   try {
-    const notification = await prisma.notification.create({
+    const notification = await req.db.notification.create({
       data: {
         id: uuidv4(),
         userId: req.user!.id,

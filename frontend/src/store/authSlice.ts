@@ -19,6 +19,8 @@ interface AuthState {
   user: User | null;
   organization: Organization | null;
   isAuthenticated: boolean;
+  // False until checkAuth has verified the stored token, so "not checked yet" isn't mistaken for "logged out"
+  isAuthChecked: boolean;
   isLoading: boolean;
   error: string | null;
 
@@ -33,6 +35,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   organization: null,
   isAuthenticated: false,
+  isAuthChecked: false,
   isLoading: false,
   error: null,
 
@@ -96,7 +99,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const token = localStorage.getItem('token');
 
     if (!token) {
-      set({ isAuthenticated: false });
+      set({ isAuthenticated: false, isAuthChecked: true });
       return;
     }
 
@@ -117,7 +120,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
         set({
           user,
+          // The stored user comes from login, which includes the organization
+          organization: user.organization ?? null,
           isAuthenticated: true,
+          isAuthChecked: true,
           isLoading: false,
         });
       } else {
@@ -127,12 +133,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         set({
           user: null,
           isAuthenticated: false,
+          isAuthChecked: true,
           isLoading: false,
         });
       }
     } catch (error) {
       console.log('Auth check failed:', error);
-      set({ isLoading: false });
+      set({ isAuthChecked: true, isLoading: false });
     }
   },
 }));

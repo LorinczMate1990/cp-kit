@@ -1,8 +1,6 @@
 import { prisma } from '../index';
-import fs from 'fs';
-import path from 'path';
 
-const REPORTS_DIR = process.env.REPORTS_DIR || '/tmp/reports';
+// Reports are passed along in memory, never written to the local disk (see ai-instructions/adr/stateless-backend.md)
 
 export function startReportJob() {
   console.log('Starting report job...');
@@ -21,13 +19,13 @@ function generateDailyReports() {
   // Get all organizations
   prisma.organization.findMany().then(orgs => {
     orgs.forEach(org => {
-      generateOrgReport(org.id, (err, reportPath) => {
+      generateOrgReport(org.id, (err, report) => {
         if (err) {
           console.log('Error generating report for org:', org.id, err);
           return;
         }
 
-        console.log('Report generated:', reportPath);
+        console.log('Report generated for org:', org.id);
 
         // Send report to admins
         prisma.user.findMany({
@@ -37,7 +35,7 @@ function generateDailyReports() {
           }
         }).then(admins => {
           admins.forEach(admin => {
-            sendReportEmail(admin.email, reportPath);
+            sendReportEmail(admin.tenantId, admin.email, report!);
           });
         }).catch(e => {
           console.log('Failed to get admins:', e);
@@ -48,15 +46,7 @@ function generateDailyReports() {
     console.log('Failed to get organizations:', err);
   });
 }
-function generateOrgReport(orgId: string, callback: (err: any, path?: string) => void) {
-  // Ensure reports directory exists
-  if (!fs.existsSync(REPORTS_DIR)) {
-    fs.mkdirSync(REPORTS_DIR, { recursive: true });
-  }
-
-  const reportDate = new Date().toISOString().split('T')[0];
-  const reportPath = path.join(REPORTS_DIR, `${orgId}_${reportDate}.json`);
-
+function generateOrgReport(orgId: string, callback: (err: any, report?: string) => void) {
   // Fetch data for report
   prisma.analyticsEvent.count({
     where: { organizationId: orgId }
@@ -92,31 +82,19 @@ function generateOrgReport(orgId: string, callback: (err: any, path?: string) =>
               userId: a.userId
             }))
           };
-          try {
-            fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
-            callback(null, reportPath);
-          } catch (writeErr) {
-            callback(writeErr);
-          }
+          callback(null, JSON.stringify(report, null, 2));
         }).catch(err => callback(err));
       }).catch(err => callback(err));
     }).catch(err => callback(err));
   }).catch(err => callback(err));
 }
 
-function sendReportEmail(email: string, reportPath: string) {
-  let reportContent: string;
-  try {
-    reportContent = fs.readFileSync(reportPath, 'utf8');
-  } catch (err) {
-    console.log('Failed to read report:', err);
-    return;
-  }
-
+function sendReportEmail(tenantId: string, email: string, reportContent: string) {
   // Queue email with report attachment
   prisma.emailQueue.create({
     data: {
       id: require('uuid').v4(),
+      tenantId,
       to: email,
       subject: 'Your Daily InsightHub Report',
       body: `
@@ -135,9 +113,6 @@ function sendReportEmail(email: string, reportPath: string) {
 // Weekly report generation
 export function generateWeeklyReport(orgId: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reportDate = new Date().toISOString().split('T')[0];
-    const reportPath = path.join(REPORTS_DIR, `${orgId}_weekly_${reportDate}.json`);
-
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
     prisma.analyticsEvent.findMany({
@@ -163,12 +138,7 @@ export function generateWeeklyReport(orgId: string): Promise<string> {
         eventsByDay,
         eventsByType
       };
-      try {
-        fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
-        resolve(reportPath);
-      } catch (err) {
-        reject(err);
-      }
+      resolve(JSON.stringify(report, null, 2));
     }).catch(reject);
   });
 }
@@ -202,22 +172,3 @@ export function exportReportData(
     callback(err);
   });
 }
-
-// Clean up old reports
-export function cleanupOldReports() {
-  const files = fs.readdirSync(REPORTS_DIR);
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-
-  files.forEach(file => {
-    const filepath = path.join(REPORTS_DIR, file);
-    const stats = fs.statSync(filepath);
-
-    if (stats.mtime.getTime() < thirtyDaysAgo) {
-      fs.unlinkSync(filepath);
-      console.log('Deleted old report:', filepath);
-    }
-  });
-}
-
-// Schedule cleanup
-setInterval(cleanupOldReports, 24 * 60 * 60 * 1000);

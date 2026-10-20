@@ -89,6 +89,7 @@ export async function sendNotificationEmail(
       data: {
         id: require('uuid').v4(),
         to: user.email,
+        tenantId: user.tenantId,
         subject,
         body: `
           <h1>${subject}</h1>
@@ -135,6 +136,7 @@ export async function sendDigestEmail(userId: string) {
       data: {
         id: require('uuid').v4(),
         to: user.email,
+        tenantId: user.tenantId,
         subject: `[${user.organization.name}] You have ${notifications.length} unread notifications`,
         body: `
           <h1>Your notification digest</h1>
@@ -163,6 +165,7 @@ export async function sendWelcomeEmail(userId: string) {
       data: {
         id: require('uuid').v4(),
         to: user.email,
+        tenantId: user.tenantId,
         subject: `Welcome to InsightHub, ${user.name}!`,
         body: `
           <h1>Welcome to InsightHub!</h1>
@@ -204,6 +207,7 @@ export async function sendAlertEmail(
         data: {
           id: require('uuid').v4(),
           to: admin.email,
+          tenantId: admin.tenantId,
           subject: `[Alert] ${alertType}`,
           body: `
             <h1>Alert: ${alertType}</h1>

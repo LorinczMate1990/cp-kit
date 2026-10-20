@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../../store/authSlice';
 import { useWebSocket } from '../../hooks/useWebSocket';
 import {
@@ -16,7 +17,21 @@ export default function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, organization, logout } = useAuthStore();
-  const { isConnected } = useWebSocket();
+  const queryClient = useQueryClient();
+  const { isConnected, addHandler } = useWebSocket();
+
+  // A dashboard created by anyone in the organization refreshes the dashboard lists.
+  // Subscribed here, on Layout's connection, because every useWebSocket() call opens its own socket.
+  useEffect(
+    () => {
+      return addHandler((message) => {
+        if (message.type === 'dashboard_created') {
+          queryClient.invalidateQueries({ queryKey: ['dashboards'] });
+        }
+      })
+    },
+    [addHandler, queryClient]
+  );
 
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);

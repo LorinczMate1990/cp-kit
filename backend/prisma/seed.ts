@@ -19,6 +19,8 @@ async function main() {
       tier: 'pro',
       monthlyBudget: 100.0,
       currentSpend: 45.50,
+      // Organizations are the tenants for now: every new organization gets its own tenant
+      tenant: { create: {} },
     },
   });
 
@@ -33,6 +35,7 @@ async function main() {
       name: 'Demo Owner',
       role: 'owner',
       organizationId: org.id,
+      tenantId: org.tenantId,
     },
   });
 
@@ -44,6 +47,7 @@ async function main() {
       name: 'Demo Admin',
       role: 'admin',
       organizationId: org.id,
+      tenantId: org.tenantId,
     },
   });
 
@@ -55,6 +59,7 @@ async function main() {
       name: 'Demo Member',
       role: 'member',
       organizationId: org.id,
+      tenantId: org.tenantId,
     },
   });
 
@@ -67,6 +72,7 @@ async function main() {
       name: 'Overview Dashboard',
       description: 'Main analytics overview',
       organizationId: org.id,
+      tenantId: org.tenantId,
       createdById: owner.id,
       layout: 'grid',
     },
@@ -78,6 +84,7 @@ async function main() {
       name: 'Sales Metrics',
       description: 'Sales performance tracking',
       organizationId: org.id,
+      tenantId: org.tenantId,
       createdById: admin.id,
       layout: 'grid',
     },
@@ -96,6 +103,7 @@ async function main() {
         position: { x: 0, y: 0, w: 3, h: 2 },
         dashboardId: dashboard1.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -105,6 +113,7 @@ async function main() {
         position: { x: 3, y: 0, w: 3, h: 2 },
         dashboardId: dashboard1.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -114,6 +123,7 @@ async function main() {
         position: { x: 6, y: 0, w: 3, h: 2 },
         dashboardId: dashboard1.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -123,6 +133,7 @@ async function main() {
         position: { x: 9, y: 0, w: 3, h: 2 },
         dashboardId: dashboard1.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -132,6 +143,7 @@ async function main() {
         position: { x: 0, y: 2, w: 6, h: 4 },
         dashboardId: dashboard1.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -141,6 +153,7 @@ async function main() {
         position: { x: 6, y: 2, w: 6, h: 4 },
         dashboardId: dashboard1.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -150,6 +163,7 @@ async function main() {
         position: { x: 0, y: 6, w: 12, h: 4 },
         dashboardId: dashboard1.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
     ],
   });
@@ -165,6 +179,7 @@ async function main() {
         position: { x: 0, y: 0, w: 4, h: 2 },
         dashboardId: dashboard2.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -174,6 +189,7 @@ async function main() {
         position: { x: 4, y: 0, w: 4, h: 2 },
         dashboardId: dashboard2.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -183,6 +199,7 @@ async function main() {
         position: { x: 8, y: 0, w: 4, h: 2 },
         dashboardId: dashboard2.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -192,6 +209,7 @@ async function main() {
         position: { x: 0, y: 2, w: 8, h: 4 },
         dashboardId: dashboard2.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -201,6 +219,7 @@ async function main() {
         position: { x: 8, y: 2, w: 4, h: 4 },
         dashboardId: dashboard2.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
       {
         id: uuidv4(),
@@ -210,6 +229,7 @@ async function main() {
         position: { x: 0, y: 6, w: 12, h: 3 },
         dashboardId: dashboard2.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
       },
     ],
   });
@@ -225,6 +245,7 @@ async function main() {
     events.push({
       id: uuidv4(),
       organizationId: org.id,
+      tenantId: org.tenantId,
       eventType: eventTypes[Math.floor(Math.random() * eventTypes.length)],
       eventName: eventNames[Math.floor(Math.random() * eventNames.length)],
       properties: { random: Math.random() },
@@ -243,6 +264,7 @@ async function main() {
         id: uuidv4(),
         userId: owner.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
         type: 'info',
         title: 'Welcome to InsightHub!',
         message: 'Get started by creating your first dashboard.',
@@ -251,6 +273,7 @@ async function main() {
         id: uuidv4(),
         userId: owner.id,
         organizationId: org.id,
+        tenantId: org.tenantId,
         type: 'warning',
         title: 'Budget Alert',
         message: 'You have used 45% of your monthly budget.',
@@ -266,6 +289,7 @@ async function main() {
       {
         id: uuidv4(),
         organizationId: org.id,
+        tenantId: org.tenantId,
         userId: owner.id,
         action: 'user.registered',
         resourceType: 'user',
@@ -274,6 +298,7 @@ async function main() {
       {
         id: uuidv4(),
         organizationId: org.id,
+        tenantId: org.tenantId,
         userId: owner.id,
         action: 'dashboard.created',
         resourceType: 'dashboard',

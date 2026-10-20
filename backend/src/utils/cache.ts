@@ -1,120 +1,52 @@
-// In-memory cache implementation
+import { redis } from './redis';
 
-interface CacheEntry<T> {
-  value: T;
-  createdAt: number;
-  ttl?: number;
-}
+// Redis-backed cache, shared by all instances (see ai-instructions/adr/stateless-backend.md).
+// Every key has a TTL, so memory is bounded by design. If Redis is unavailable the cache is skipped:
+// reads miss and writes are dropped, so requests fall back to the database instead of failing.
 
-class MemoryCache {
-  private cache: Map<string, CacheEntry<any>> = new Map();
-  set<T>(key: string, value: T, ttlSeconds?: number): void {
-    this.cache.set(key, {
-      value,
-      createdAt: Date.now(),
-      ttl: ttlSeconds ? ttlSeconds * 1000 : undefined
-    });
-  }
+const PREFIX = 'cache:';
 
-  get<T>(key: string): T | undefined {
-    const entry = this.cache.get(key);
-
-    if (!entry) {
+export const cache = {
+  async get<T>(key: string): Promise<T | undefined> {
+    try {
+      const value = await redis.get(PREFIX + key);
+      return value === null ? undefined : (JSON.parse(value) as T);
+    } catch (error) {
+      console.error(`Cache read failed for ${key}:`, (error as Error).message);
       return undefined;
     }
+  },
 
-    if (entry.ttl && Date.now() - entry.createdAt > entry.ttl) {
-      this.cache.delete(key);
-      return undefined;
+  async set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+    try {
+      await redis.set(PREFIX + key, JSON.stringify(value), { EX: ttlSeconds });
+    } catch (error) {
+      console.error(`Cache write failed for ${key}:`, (error as Error).message);
     }
+  },
 
-    return entry.value as T;
-  }
+  async delete(key: string): Promise<void> {
+    try {
+      await redis.del(PREFIX + key);
+    } catch (error) {
+      console.error(`Cache delete failed for ${key}:`, (error as Error).message);
+    }
+  },
 
-  delete(key: string): boolean {
-    return this.cache.delete(key);
-  }
-
-  // Delete all keys matching a pattern
-  deletePattern(pattern: string): number {
-    let deleted = 0;
-    const regex = new RegExp(pattern);
-
-    for (const key of this.cache.keys()) {
-      if (regex.test(key)) {
-        this.cache.delete(key);
-        deleted++;
+  // Deletes every key that starts with the given prefix
+  async deleteByPrefix(prefix: string): Promise<void> {
+    try {
+      for await (const key of redis.scanIterator({ MATCH: `${PREFIX}${prefix}*`, COUNT: 100 })) {
+        await redis.del(key);
       }
+    } catch (error) {
+      console.error(`Cache delete failed for ${prefix}*:`, (error as Error).message);
     }
-
-    return deleted;
   }
-
-  clear(): void {
-    this.cache.clear();
-  }
-  size(): number {
-    return this.cache.size;
-  }
-  cleanup(): number {
-    const now = Date.now();
-    let cleaned = 0;
-
-    for (const [key, entry] of this.cache.entries()) {
-      if (entry.ttl && now - entry.createdAt > entry.ttl) {
-        this.cache.delete(key);
-        cleaned++;
-      }
-    }
-
-    return cleaned;
-  }
-}
-
-// Singleton instance
-export const cache = new MemoryCache();
-
-// Cache key generators
-export const cacheKeys = {
-  user: (userId: string) => `user:${userId}`,
-  organization: (orgId: string) => `org:${orgId}`,
-  dashboard: (dashboardId: string) => `dashboard:${dashboardId}`,
-  dashboardWidgets: (dashboardId: string) => `dashboard:${dashboardId}:widgets`,
-  userDashboards: (userId: string) => `user:${userId}:dashboards`,
-  orgAnalytics: (orgId: string, period: string) => `org:${orgId}:analytics:${period}`,
-  orgUsers: (orgId: string) => `org:${orgId}:users`,
-  apiKey: (key: string) => `apikey:${key}`,
 };
 
-// Common cache patterns
-export async function cacheOrFetch<T>(
-  key: string,
-  fetchFn: () => Promise<T>,
-  ttlSeconds: number = 300
-): Promise<T> {
-  const cached = cache.get<T>(key);
-
-  if (cached !== undefined) {
-    return cached;
-  }
-
-  const value = await fetchFn();
-  cache.set(key, value, ttlSeconds);
-  return value;
-}
-
-export async function prefetchToCache<T>(
-  items: Array<{ key: string; fetchFn: () => Promise<T> }>,
-  ttlSeconds: number = 300
-): Promise<void> {
-  await Promise.all(
-    items.map(async ({ key, fetchFn }) => {
-      try {
-        const value = await fetchFn();
-        cache.set(key, value, ttlSeconds);
-      } catch (error) {
-        console.log(`Failed to prefetch ${key}`);
-      }
-    })
-  );
-}
+// Cache key generators. Keys must not contain unbounded user input, or the number of keys is unbounded too.
+export const cacheKeys = {
+  organization: (orgId: string) => `org:${orgId}`,
+  orgAnalytics: (orgId: string, period: string) => `org:${orgId}:analytics:${period}`
+};

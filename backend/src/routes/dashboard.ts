@@ -1,17 +1,17 @@
 import { Router, Response } from 'express';
-import { prisma } from '../index';
-import { AuthRequest, requireOwnerOrAdmin } from '../middleware/auth';
+import { requireOwnerOrAdmin } from '../middleware/auth';
+import { TenantRequest } from '../middleware/tenant';
+import { isNotFoundError } from '../utils/prismaErrors';
 import { validate, createDashboardSchema, createWidgetSchema } from '../middleware/validate';
-import { cache, cacheKeys } from '../utils/cache';
 import { broadcastToOrg } from '../index';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
 // Get all dashboards for organization
-router.get('/', async (req: AuthRequest, res: Response) => {
+router.get('/', async (req: TenantRequest, res: Response) => {
   try {
-    const dashboards = await prisma.dashboard.findMany({
+    const dashboards = await req.db.dashboard.findMany({
       where: { organizationId: req.user!.organizationId },
       include: {
         createdBy: {
@@ -32,11 +32,11 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 });
 
 // Get single dashboard with widgets
-router.get('/:dashboardId', async (req: AuthRequest, res: Response) => {
+router.get('/:dashboardId', async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId } = req.params;
 
-    const dashboard = await prisma.dashboard.findFirst({
+    const dashboard = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         organizationId: req.user!.organizationId
@@ -63,11 +63,11 @@ router.get('/:dashboardId', async (req: AuthRequest, res: Response) => {
 });
 
 // Create dashboard
-router.post('/', validate(createDashboardSchema), async (req: AuthRequest, res: Response) => {
+router.post('/', validate(createDashboardSchema), async (req: TenantRequest, res: Response) => {
   try {
     const { name, description, layout } = req.body;
 
-    const dashboard = await prisma.dashboard.create({
+    const dashboard = await req.db.dashboard.create({
       data: {
         id: uuidv4(),
         name,
@@ -84,7 +84,7 @@ router.post('/', validate(createDashboardSchema), async (req: AuthRequest, res: 
     });
 
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -110,12 +110,12 @@ router.post('/', validate(createDashboardSchema), async (req: AuthRequest, res: 
 });
 
 // Update dashboard
-router.put('/:dashboardId', async (req: AuthRequest, res: Response) => {
+router.put('/:dashboardId', async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId } = req.params;
     const { name, description, layout, settings, isPublic } = req.body;
 
-    const existing = await prisma.dashboard.findFirst({
+    const existing = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         organizationId: req.user!.organizationId
@@ -133,16 +133,13 @@ router.put('/:dashboardId', async (req: AuthRequest, res: Response) => {
     if (settings !== undefined) updateData.settings = settings;
     if (isPublic !== undefined) updateData.isPublic = isPublic;
 
-    const dashboard = await prisma.dashboard.update({
+    const dashboard = await req.db.dashboard.update({
       where: { id: dashboardId },
       data: updateData,
       include: {
         widgets: true
       }
     });
-
-    // Invalidate cache
-    cache.delete(cacheKeys.dashboard(dashboardId));
 
     res.json(dashboard);
   } catch (error) {
@@ -152,11 +149,11 @@ router.put('/:dashboardId', async (req: AuthRequest, res: Response) => {
 });
 
 // Delete dashboard
-router.delete('/:dashboardId', async (req: AuthRequest, res: Response) => {
+router.delete('/:dashboardId', async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId } = req.params;
 
-    const dashboard = await prisma.dashboard.findFirst({
+    const dashboard = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         organizationId: req.user!.organizationId
@@ -166,16 +163,12 @@ router.delete('/:dashboardId', async (req: AuthRequest, res: Response) => {
     if (!dashboard) {
       return res.status(404).json({ error: 'Dashboard not found' });
     }
-    await prisma.dashboard.delete({
+    await req.db.dashboard.delete({
       where: { id: dashboardId }
     });
 
-    // Clear cache
-    cache.delete(cacheKeys.dashboard(dashboardId));
-    cache.delete(cacheKeys.dashboardWidgets(dashboardId));
-
     // Audit log
-    await prisma.auditLog.create({
+    await req.db.auditLog.create({
       data: {
         id: uuidv4(),
         organizationId: req.user!.organizationId,
@@ -194,12 +187,12 @@ router.delete('/:dashboardId', async (req: AuthRequest, res: Response) => {
 });
 
 // Add widget to dashboard
-router.post('/:dashboardId/widgets', validate(createWidgetSchema), async (req: AuthRequest, res: Response) => {
+router.post('/:dashboardId/widgets', validate(createWidgetSchema), async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId } = req.params;
     const { name, type, config, position, dataSource, refreshInterval } = req.body;
 
-    const dashboard = await prisma.dashboard.findFirst({
+    const dashboard = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         organizationId: req.user!.organizationId
@@ -210,7 +203,7 @@ router.post('/:dashboardId/widgets', validate(createWidgetSchema), async (req: A
       return res.status(404).json({ error: 'Dashboard not found' });
     }
 
-    const widget = await prisma.widget.create({
+    const widget = await req.db.widget.create({
       data: {
         id: uuidv4(),
         name,
@@ -224,9 +217,6 @@ router.post('/:dashboardId/widgets', validate(createWidgetSchema), async (req: A
       }
     });
 
-    // Invalidate cache
-    cache.delete(cacheKeys.dashboardWidgets(dashboardId));
-
     res.status(201).json(widget);
   } catch (error) {
     console.error('Create widget error:', error);
@@ -235,13 +225,13 @@ router.post('/:dashboardId/widgets', validate(createWidgetSchema), async (req: A
 });
 
 // Update widget
-router.put('/:dashboardId/widgets/:widgetId', async (req: AuthRequest, res: Response) => {
+router.put('/:dashboardId/widgets/:widgetId', async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId, widgetId } = req.params;
     const { name, type, config, position, dataSource, refreshInterval } = req.body;
 
     // Verify dashboard belongs to org
-    const dashboard = await prisma.dashboard.findFirst({
+    const dashboard = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         organizationId: req.user!.organizationId
@@ -259,26 +249,27 @@ router.put('/:dashboardId/widgets/:widgetId', async (req: AuthRequest, res: Resp
     if (dataSource !== undefined) updateData.dataSource = dataSource;
     if (refreshInterval !== undefined) updateData.refreshInterval = refreshInterval;
 
-    const widget = await prisma.widget.update({
-      where: { id: widgetId },
+    const widget = await req.db.widget.update({
+      where: { id: widgetId, dashboardId },
       data: updateData
     });
 
-    cache.delete(cacheKeys.dashboardWidgets(dashboardId));
-
     res.json(widget);
   } catch (error) {
+    if (isNotFoundError(error)) {
+      return res.status(404).json({ error: 'Widget not found' });
+    }
     console.error('Update widget error:', error);
     res.status(500).json({ error: 'Failed to update widget' });
   }
 });
 
 // Delete widget
-router.delete('/:dashboardId/widgets/:widgetId', async (req: AuthRequest, res: Response) => {
+router.delete('/:dashboardId/widgets/:widgetId', async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId, widgetId } = req.params;
 
-    const dashboard = await prisma.dashboard.findFirst({
+    const dashboard = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         organizationId: req.user!.organizationId
@@ -289,26 +280,27 @@ router.delete('/:dashboardId/widgets/:widgetId', async (req: AuthRequest, res: R
       return res.status(404).json({ error: 'Dashboard not found' });
     }
 
-    await prisma.widget.delete({
-      where: { id: widgetId }
+    await req.db.widget.delete({
+      where: { id: widgetId, dashboardId }
     });
-
-    cache.delete(cacheKeys.dashboardWidgets(dashboardId));
 
     res.json({ message: 'Widget deleted' });
   } catch (error) {
+    if (isNotFoundError(error)) {
+      return res.status(404).json({ error: 'Widget not found' });
+    }
     console.error('Delete widget error:', error);
     res.status(500).json({ error: 'Failed to delete widget' });
   }
 });
 
 // Get widget data
-router.get('/:dashboardId/widgets/:widgetId/data', async (req: AuthRequest, res: Response) => {
+router.get('/:dashboardId/widgets/:widgetId/data', async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId, widgetId } = req.params;
     const { startDate, endDate } = req.query;
 
-    const dashboard = await prisma.dashboard.findFirst({
+    const dashboard = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         organizationId: req.user!.organizationId
@@ -319,8 +311,8 @@ router.get('/:dashboardId/widgets/:widgetId/data', async (req: AuthRequest, res:
       return res.status(404).json({ error: 'Dashboard not found' });
     }
 
-    const widget = await prisma.widget.findUnique({
-      where: { id: widgetId }
+    const widget = await req.db.widget.findUnique({
+      where: { id: widgetId, dashboardId }
     });
 
     if (!widget) {
@@ -333,7 +325,7 @@ router.get('/:dashboardId/widgets/:widgetId/data', async (req: AuthRequest, res:
     switch (widget.type) {
       case 'metric':
         // Get count/sum of events
-        data = await prisma.analyticsEvent.count({
+        data = await req.db.analyticsEvent.count({
           where: {
             organizationId: req.user!.organizationId,
             ...(startDate && endDate ? {
@@ -347,7 +339,7 @@ router.get('/:dashboardId/widgets/:widgetId/data', async (req: AuthRequest, res:
         break;
 
       case 'chart':
-        data = await prisma.analyticsEvent.groupBy({
+        data = await req.db.analyticsEvent.groupBy({
           by: ['eventType'],
           where: {
             organizationId: req.user!.organizationId
@@ -357,7 +349,7 @@ router.get('/:dashboardId/widgets/:widgetId/data', async (req: AuthRequest, res:
         break;
 
       case 'table':
-        data = await prisma.analyticsEvent.findMany({
+        data = await req.db.analyticsEvent.findMany({
           where: {
             organizationId: req.user!.organizationId
           },
@@ -378,11 +370,11 @@ router.get('/:dashboardId/widgets/:widgetId/data', async (req: AuthRequest, res:
 });
 
 // Batch get all widget data for a dashboard
-router.get('/:dashboardId/data', async (req: AuthRequest, res: Response) => {
+router.get('/:dashboardId/data', async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId } = req.params;
 
-    const dashboard = await prisma.dashboard.findFirst({
+    const dashboard = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         organizationId: req.user!.organizationId
@@ -402,17 +394,17 @@ router.get('/:dashboardId/data', async (req: AuthRequest, res: Response) => {
       let data: any = null;
 
       if (widget.type === 'metric') {
-        data = await prisma.analyticsEvent.count({
+        data = await req.db.analyticsEvent.count({
           where: { organizationId: req.user!.organizationId }
         });
       } else if (widget.type === 'chart') {
-        data = await prisma.analyticsEvent.groupBy({
+        data = await req.db.analyticsEvent.groupBy({
           by: ['eventType'],
           where: { organizationId: req.user!.organizationId },
           _count: true
         });
       } else if (widget.type === 'table') {
-        data = await prisma.analyticsEvent.findMany({
+        data = await req.db.analyticsEvent.findMany({
           where: { organizationId: req.user!.organizationId },
           take: 50
         });
@@ -435,12 +427,12 @@ router.get('/:dashboardId/data', async (req: AuthRequest, res: Response) => {
 });
 
 // Duplicate dashboard
-router.post('/:dashboardId/duplicate', async (req: AuthRequest, res: Response) => {
+router.post('/:dashboardId/duplicate', async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId } = req.params;
     const { name } = req.body;
 
-    const original = await prisma.dashboard.findFirst({
+    const original = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         organizationId: req.user!.organizationId
@@ -455,7 +447,7 @@ router.post('/:dashboardId/duplicate', async (req: AuthRequest, res: Response) =
     const newDashboardId = uuidv4();
 
     // Create dashboard copy
-    const dashboard = await prisma.dashboard.create({
+    const dashboard = await req.db.dashboard.create({
       data: {
         id: newDashboardId,
         name: name || `${original.name} (Copy)`,
@@ -469,7 +461,7 @@ router.post('/:dashboardId/duplicate', async (req: AuthRequest, res: Response) =
 
     // Copy widgets
     for (const widget of original.widgets) {
-      await prisma.widget.create({
+      await req.db.widget.create({
         data: {
           id: uuidv4(),
           name: widget.name,
@@ -492,11 +484,11 @@ router.post('/:dashboardId/duplicate', async (req: AuthRequest, res: Response) =
 });
 
 // Share dashboard (get shareable link)
-router.post('/:dashboardId/share', async (req: AuthRequest, res: Response) => {
+router.post('/:dashboardId/share', async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId } = req.params;
 
-    const dashboard = await prisma.dashboard.findFirst({
+    const dashboard = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         organizationId: req.user!.organizationId
@@ -508,7 +500,7 @@ router.post('/:dashboardId/share', async (req: AuthRequest, res: Response) => {
     }
 
     // Make dashboard public
-    await prisma.dashboard.update({
+    await req.db.dashboard.update({
       where: { id: dashboardId },
       data: { isPublic: true }
     });
@@ -522,11 +514,11 @@ router.post('/:dashboardId/share', async (req: AuthRequest, res: Response) => {
 });
 
 // Get shared dashboard (public endpoint would need to be added)
-router.get('/shared/:dashboardId', async (req: AuthRequest, res: Response) => {
+router.get('/shared/:dashboardId', async (req: TenantRequest, res: Response) => {
   try {
     const { dashboardId } = req.params;
 
-    const dashboard = await prisma.dashboard.findFirst({
+    const dashboard = await req.db.dashboard.findFirst({
       where: {
         id: dashboardId,
         isPublic: true

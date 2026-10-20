@@ -13,3 +13,8 @@ export const CACHE_TTL = {
   ORGANIZATION: 300, // 5 minutes
   ANALYTICS: 60, // 1 minute
 };
+
+// WebSocket close codes (4000-4999 is the range RFC 6455 leaves to applications)
+export const WS_CLOSE_CODES = {
+  TOKEN_EXPIRED: 4001,
+};

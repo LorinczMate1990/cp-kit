@@ -16,6 +16,7 @@ export default defineConfig({
       '/api': {
         target: 'http://backend:3001',
         changeOrigin: true,
+        ws: true, // the WebSocket at /api/ws goes through the same proxy as the REST API
       },
     },
   },

@@ -24,3 +24,13 @@ Log the state of the task in the <folder>/state.md
 3) Currently uncached entities, so they must not get invalidation code until they are actually cached:
    - dashboards and their widgets (`dashboard:<id>`, `dashboard:<id>:widgets`): if cached, invalidate on dashboard update/delete and on widget create/update/delete;
    - users (`user:<id>`): if cached, invalidate on profile, password, role/status changes and on deletion.
+
+## Verify client-side navigation
+
+1) Links to routes of the frontend app must use React Router's `<Link>` (or `navigate()`), never a plain `<a href>`. A plain anchor makes the browser reload the whole page: the in-memory state (auth store, React Query cache) is lost, every query refetches and the WebSocket reconnects.
+2) A plain `<a>` is only acceptable where a page load is intended: external URLs, `mailto:` links and file downloads (e.g. the `document.createElement('a')` pattern used for exports).
+
+## Verify immutable store updates
+
+1) Store slices (`frontend/src/store/*Slice.ts`) must never modify state in place: no `push`, `splice`, `Object.assign`, `sort` or property assignment on objects or arrays taken from `get()`. Zustand and React detect changes by reference, so an in-place change passed to `set` may not re-render the components that use it.
+2) Every object and array on the path from the store to the changed value must be replaced with a new one (spread, `map`, `filter`); unchanged parts are reused as they are.

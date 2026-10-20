@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/authSlice';
 import Login from './pages/Login';
@@ -13,11 +14,13 @@ import AuditLogs from './pages/AuditLogs';
 import SharedDashboard from './pages/SharedDashboard';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuthStore();
-  // Also checking localStorage directly instead of state
-  const token = localStorage.getItem('token');
+  const { isAuthenticated, isAuthChecked } = useAuthStore();
 
-  if (!isAuthenticated && !token) {
+  if (!isAuthenticated) {
+    // After a reload, wait for checkAuth to verify the stored token before redirecting to login
+    if (!isAuthChecked) {
+      return <div className="p-8 text-center text-gray-500">Loading...</div>;
+    }
     return <Navigate to="/login" />;
   }
 
@@ -25,6 +28,13 @@ function PrivateRoute({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
+  const checkAuth = useAuthStore((state) => state.checkAuth);
+
+  // The store is in memory only: after a page reload, restore the session from the stored token
+  useEffect(() => {
+    checkAuth();
+  }, [checkAuth]);
+
   return (
     <Routes>
       <Route path="/login" element={<Login />} />

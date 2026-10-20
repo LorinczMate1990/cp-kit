@@ -16,6 +16,39 @@ export interface AuthRequest extends Request {
   };
 }
 
+export type AuthUser = NonNullable<AuthRequest['user']>;
+
+// Resolves a JWT to its active user, or null if the token is invalid, expired or the user is gone or deactivated.
+// Shared by authMiddleware and the WebSocket handshake, so HTTP and WebSocket apply the same rules.
+export const authenticateToken = async (token: string): Promise<{ user: AuthUser; expiresAt: number } | null> => {
+  let decoded: any;
+  try {
+    decoded = jwt.verify(token, JWT_SECRET);
+  } catch (jwtError) {
+    console.log('JWT verification failed:', jwtError);
+    return null;
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: decoded.userId }
+  });
+
+  if (!user || !user.isActive) {
+    return null;
+  }
+
+  return {
+    user: {
+      id: user.id,
+      email: user.email,
+      organizationId: user.organizationId,
+      tenantId: user.tenantId,
+      role: user.role
+    },
+    expiresAt: decoded.exp * 1000
+  };
+};
+
 export const authMiddleware = async (
   req: AuthRequest,
   res: Response,
@@ -34,34 +67,15 @@ export const authMiddleware = async (
       return res.status(401).json({ error: 'No token provided' });
     }
 
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const authenticated = await authenticateToken(token);
 
-      const user = await prisma.user.findUnique({
-        where: { id: decoded.userId }
-      });
-
-      if (!user) {
-        return res.status(401).json({ error: GENERIC_TOKEN_ERROR_MESSAGE});
-      }
-
-      if (!user.isActive) {
-        return res.status(401).json({ error: GENERIC_TOKEN_ERROR_MESSAGE});
-      }
-
-      req.user = {
-        id: user.id,
-        email: user.email,
-        organizationId: user.organizationId,
-        tenantId: user.tenantId,
-        role: user.role
-      };
-
-      next();
-    } catch (jwtError) {
-      console.log('JWT verification failed:', jwtError);
+    if (!authenticated) {
       return res.status(401).json({ error: GENERIC_TOKEN_ERROR_MESSAGE});
     }
+
+    req.user = authenticated.user;
+
+    next();
   } catch (error) {
     console.error('Auth middleware error:', error);
     return res.status(500).json({ error: 'Authentication error' });

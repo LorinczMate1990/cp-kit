@@ -17,13 +17,15 @@ import webhooksRoutes from './routes/webhooks';
 import { authMiddleware } from './middleware/auth';
 import { tenantMiddleware } from './middleware/tenant';
 import { rateLimiter } from './middleware/rateLimit';
+import { createUpgradeHandler } from './middleware/websocketAuth';
 import { redis, connectRedis } from './utils/redis';
 import { startNotificationJob } from './jobs/notifications';
 import { startReportJob } from './jobs/reports';
 
 const app = express();
 const server = createServer(app);
-const wss = new WebSocketServer({ server });
+// noServer: handshakes are authenticated in the upgrade handler below before a connection is accepted
+const wss = new WebSocketServer({ noServer: true });
 
 export const prisma = new PrismaClient();
 app.use(cors({
@@ -58,36 +60,23 @@ app.use('/api/webhooks', authMiddleware, tenantMiddleware, webhooksRoutes);
 const wsClients = new Map<string, Set<any>>();
 const BROADCAST_CHANNEL = 'ws:broadcast';
 
-wss.on('connection', (ws, req) => {
-  const orgId = req.url?.split('?org=')[1];
+// Messages from clients are ignored: the server only pushes broadcasts from routes (broadcastToOrg)
+server.on('upgrade', createUpgradeHandler(wss, (ws, user) => {
+  const orgId = user.organizationId;
 
-  if (orgId) {
-    if (!wsClients.has(orgId)) {
-      wsClients.set(orgId, new Set());
-    }
-    wsClients.get(orgId)!.add(ws);
-
-    ws.on('close', () => {
-      const clients = wsClients.get(orgId);
-      clients?.delete(ws);
-      if (clients?.size === 0) {
-        wsClients.delete(orgId);
-      }
-    });
+  if (!wsClients.has(orgId)) {
+    wsClients.set(orgId, new Set());
   }
+  wsClients.get(orgId)!.add(ws);
 
-  ws.on('message', (data) => {
-    // Broadcast to all clients in same org
-    const message = JSON.parse(data.toString());
-    if (message.orgId && wsClients.has(message.orgId)) {
-      wsClients.get(message.orgId)?.forEach(client => {
-        if (client !== ws && client.readyState === 1) {
-          client.send(JSON.stringify(message));
-        }
-      });
+  ws.on('close', () => {
+    const clients = wsClients.get(orgId);
+    clients?.delete(ws);
+    if (clients?.size === 0) {
+      wsClients.delete(orgId);
     }
   });
-});
+}));
 
 // Delivers a message to the clients of an organization connected to this instance
 function deliverToOrg(orgId: string, message: object) {
